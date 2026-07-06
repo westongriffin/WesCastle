@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wes's Castle — Book Thy Chamber</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<style>
+:root{
+  --parch:#f6f1e6; --card:#fffdf7; --ink:#2b2338; --ink2:#6b6078; --line:#e6dcc6;
+  --purple:#4c2a85; --purple-deep:#38206b; --gold:#c9a227; --gold-soft:#f3e8c9;
+  --green:#2e7d4f; --red:#b3402f; --radius:14px;
+  --shadow:0 2px 8px rgba(43,35,56,.08), 0 12px 32px rgba(43,35,56,.07);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{background:var(--parch);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;
+  background-image:radial-gradient(circle at 15% 10%, rgba(201,162,39,.07), transparent 40%),radial-gradient(circle at 85% 90%, rgba(76,42,133,.06), transparent 40%);}
+h1,h2,h3,.serif{font-family:Georgia,'Iowan Old Style','Times New Roman',serif}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font:inherit;color:inherit}
+.wrap{max-width:1040px;margin:0 auto;padding:0 20px 80px}
+
+/* ---------- header ---------- */
+header{text-align:center;padding:44px 16px 8px}
+.crest{font-size:56px;line-height:1;filter:drop-shadow(0 4px 10px rgba(76,42,133,.25))}
+h1{font-size:clamp(34px,6vw,52px);letter-spacing:.5px;color:var(--purple-deep);margin-top:6px}
+.tagline{font-family:Georgia,serif;font-style:italic;color:var(--ink2);font-size:18px;margin-top:4px}
+.rule{width:180px;margin:20px auto 0;border:none;border-top:2px solid var(--gold);position:relative}
+.rule::after{content:'⚜️';position:absolute;left:50%;top:-13px;transform:translateX(-50%);background:var(--parch);padding:0 10px;font-size:14px}
+.demo-banner{max-width:640px;margin:18px auto 0;background:var(--gold-soft);border:1px solid var(--gold);border-radius:10px;padding:10px 14px;font-size:13.5px;color:#6d5410;text-align:center}
+.demo-banner b{color:#4d3a06}
+
+/* ---------- room grid ---------- */
+.rooms{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:20px;margin-top:30px}
+.room{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:22px;display:flex;flex-direction:column;gap:8px;transition:transform .15s ease, box-shadow .15s ease;position:relative;overflow:hidden}
+.room:hover{transform:translateY(-3px);box-shadow:0 4px 12px rgba(43,35,56,.12), 0 18px 44px rgba(43,35,56,.12)}
+.room .emoji{font-size:38px;line-height:1}
+.room h3{font-size:23px;color:var(--purple-deep)}
+.room .tag{color:var(--ink2);font-size:14.5px;flex:1}
+.room .rate{font-size:13px;color:var(--gold);font-weight:600;letter-spacing:.2px}
+.room .keeper{font-size:12.5px;color:var(--ink2)}
+.room .keeper b{color:var(--ink)}
+.chip{display:inline-block;font-size:12px;font-weight:700;padding:3px 10px;border-radius:99px;letter-spacing:.3px}
+.chip.free{background:#e3f2e9;color:var(--green)}
+.chip.busy{background:#fdeceb;color:var(--red)}
+.chip.closed{background:#eee9f7;color:var(--purple)}
+.room .toprow{display:flex;justify-content:space-between;align-items:flex-start}
+.btn{background:var(--purple);color:#fff;border-radius:10px;padding:10px 18px;font-weight:600;font-size:15px;transition:background .15s}
+.btn:hover{background:var(--purple-deep)}
+.btn.gold{background:var(--gold);color:#3d2e05}.btn.gold:hover{background:#b28e1d}
+.btn.ghost{background:transparent;color:var(--purple);border:1.5px solid var(--purple)}
+.btn.ghost:hover{background:rgba(76,42,133,.07)}
+.btn.danger{background:transparent;color:var(--red);border:1.5px solid #e0b4ac}.btn.danger:hover{background:#fdeceb}
+.btn.sm{padding:6px 12px;font-size:13px;border-radius:8px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.room.dungeon{background:#241b33;border-color:#3d2f57;color:#e8e2f4}
+.room.dungeon h3{color:#e0c568}
+.room.dungeon .tag{color:#a99cc4}
+.room.dungeon .keeper{color:#a99cc4}.room.dungeon .keeper b{color:#e8e2f4}
+.room.closed-room{opacity:.65}
+.room.closed-room::after{content:'CLOSED BY ORDER OF THE CROWN';position:absolute;top:18px;right:-44px;transform:rotate(35deg);background:var(--purple);color:#fff;font-size:9.5px;font-weight:800;letter-spacing:1px;padding:4px 48px}
+
+/* ---------- footer ---------- */
+footer{margin-top:56px;text-align:center;color:var(--ink2);font-size:13.5px}
+footer .links{display:flex;gap:22px;justify-content:center;margin-bottom:10px;flex-wrap:wrap}
+footer button{color:var(--purple);font-weight:600;font-size:13.5px}
+footer button:hover{text-decoration:underline}
+
+/* ---------- modal ---------- */
+.veil{position:fixed;inset:0;background:rgba(30,22,46,.55);z-index:90;display:none;align-items:flex-start;justify-content:center;overflow-y:auto;padding:5vh 14px 40px;pointer-events:none;opacity:0;transition:opacity .18s}
+.veil.open{display:flex;pointer-events:auto;opacity:1}
+.modal{background:var(--card);border-radius:18px;max-width:680px;width:100%;padding:28px;box-shadow:0 24px 80px rgba(20,12,40,.4);position:relative;animation:pop .22s ease}
+@keyframes pop{from{transform:translateY(14px) scale(.98);opacity:0}to{transform:none;opacity:1}}
+.modal .x{position:absolute;top:14px;right:16px;font-size:22px;color:var(--ink2);padding:4px 8px;border-radius:8px}
+.modal .x:hover{background:rgba(0,0,0,.06)}
+.modal h2{color:var(--purple-deep);font-size:26px;margin-bottom:2px}
+.modal .sub{color:var(--ink2);font-size:14px;margin-bottom:16px}
+.field{margin:14px 0}
+.field label{display:block;font-size:13px;font-weight:700;color:var(--ink2);margin-bottom:5px;letter-spacing:.3px;text-transform:uppercase}
+.field input{width:100%;padding:11px 13px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font-size:16px}
+.field input:focus{outline:none;border-color:var(--purple)}
+.mrow{display:flex;gap:10px;justify-content:flex-end;margin-top:18px;flex-wrap:wrap}
+
+/* ---------- calendar ---------- */
+.cal-wrap{display:flex;gap:24px;flex-wrap:wrap;justify-content:center;margin:10px 0 4px}
+.cal{flex:1;min-width:260px;max-width:300px}
+.cal .mhead{display:flex;align-items:center;justify-content:center;gap:8px;font-family:Georgia,serif;font-size:17px;font-weight:700;color:var(--purple-deep);margin-bottom:8px}
+.cal-nav{display:flex;justify-content:space-between;margin-bottom:-30px;position:relative;z-index:2}
+.cal-nav button{width:34px;height:34px;border-radius:50%;font-size:18px;color:var(--purple);border:1.5px solid var(--line);background:#fff}
+.cal-nav button:hover:not(:disabled){border-color:var(--purple)}
+.cal-nav button:disabled{opacity:.3;cursor:default}
+.dow,.days{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.dow div{text-align:center;font-size:11px;font-weight:700;color:var(--ink2);padding:4px 0}
+.days button{aspect-ratio:1;border-radius:9px;font-size:14px;font-weight:500;display:flex;align-items:center;justify-content:center;position:relative}
+.days button:hover:not(.off):not(.booked){background:rgba(76,42,133,.1)}
+.days .blank{visibility:hidden}
+.days .off{color:#c9c2b4;cursor:default;text-decoration:line-through;text-decoration-color:#d8d2c4}
+.days .booked{color:#cf8f85;cursor:not-allowed;background:repeating-linear-gradient(45deg,#fdf0ee,#fdf0ee 3px,#fae3e0 3px,#fae3e0 6px)}
+.days .booked.edge-ok{cursor:pointer}
+.days .today{box-shadow:inset 0 0 0 1.5px var(--gold)}
+.days .range{background:#ece5f8;border-radius:0}
+.days .sel{background:var(--purple)!important;color:#fff!important;font-weight:700}
+.legend{display:flex;gap:18px;justify-content:center;font-size:12px;color:var(--ink2);margin:10px 0 2px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:14px;height:14px;border-radius:4px;display:inline-block}
+.legend .l-free{background:#fff;border:1.5px solid var(--line)}
+.legend .l-booked{background:repeating-linear-gradient(45deg,#fdf0ee,#fdf0ee 3px,#fae3e0 3px,#fae3e0 6px)}
+.legend .l-sel{background:var(--purple)}
+.sel-summary{text-align:center;background:var(--gold-soft);border:1px solid var(--gold);border-radius:10px;padding:10px;font-size:14.5px;margin-top:12px}
+.sel-summary b{color:var(--purple-deep)}
+
+/* ---------- confirmation ---------- */
+.conf-code{font-family:ui-monospace,Menlo,monospace;font-size:30px;font-weight:800;letter-spacing:3px;color:var(--purple-deep);background:var(--gold-soft);border:2px dashed var(--gold);border-radius:12px;padding:16px;text-align:center;margin:16px 0}
+
+/* ---------- keeper view ---------- */
+.keeper-bar{background:var(--purple-deep);color:#fff;border-radius:var(--radius);padding:14px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:26px;box-shadow:var(--shadow)}
+.keeper-bar .who{flex:1;font-size:15px}.keeper-bar .who b{color:var(--gold)}
+.kcard{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 22px;margin-top:18px}
+.kcard h3{color:var(--purple-deep);font-size:20px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.kcard h3 .spacer{flex:1}
+.bk-list{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.bk-row{display:flex;align-items:center;gap:12px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fff;flex-wrap:wrap}
+.bk-row .badge{font-size:11px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:99px}
+.badge.guest{background:#e3f2e9;color:var(--green)}
+.badge.block{background:#eee9f7;color:var(--purple)}
+.bk-row .name{font-weight:600;flex:1;min-width:120px}
+.bk-row .dates{color:var(--ink2);font-size:13.5px}
+.empty{color:var(--ink2);font-size:14px;font-style:italic;padding:8px 2px}
+table.owners{width:100%;border-collapse:collapse;margin-top:12px;font-size:14.5px}
+table.owners th{text-align:left;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--ink2);padding:6px 8px;border-bottom:1.5px solid var(--line)}
+table.owners td{padding:8px;border-bottom:1px solid var(--line);vertical-align:middle}
+table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:8px;width:100%;max-width:150px;background:#fff}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:12px}
+.setting{border:1px solid var(--line);border-radius:10px;padding:14px;background:#fff}
+.setting h4{font-size:14px;margin-bottom:8px}
+.setting p{font-size:12.5px;color:var(--ink2);margin-bottom:10px}
+.inline-form{display:flex;gap:8px;flex-wrap:wrap}
+.inline-form input{flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:#fff}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:12px 22px;border-radius:12px;font-size:14.5px;box-shadow:0 10px 30px rgba(0,0,0,.3);transition:transform .25s ease;z-index:200;max-width:92vw;text-align:center}
+#toast.show{transform:translateX(-50%) translateY(0)}
+#toast.err{background:var(--red)}
+
+@media (max-width:640px){
+  .modal{padding:22px 18px}
+  header{padding-top:30px}
+  .cal{max-width:100%}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="crest">🏰</div>
+  <h1>Wes&rsquo;s Castle</h1>
+  <div class="tagline">Six legendary chambers. One benevolent king. Book thy stay.</div>
+  <hr class="rule">
+  <div class="demo-banner" id="demo-banner" style="display:none">
+    ⚗️ <b>Demo mode</b> — reservations are saved on this device only. The Keeper can connect the royal ledger (backend) in the Keeper&rsquo;s Entrance.
+  </div>
+</header>
+
+<div class="wrap">
+  <div id="main"></div>
+  <footer>
+    <div class="links">
+      <button data-act="openCancel">📜 Cancel a reservation</button>
+      <button data-act="openKeeper">🗝️ Keeper&rsquo;s Entrance</button>
+    </div>
+    <div>No gold changes hands. Payment is accepted in compliments, favors, and doing your own dishes.</div>
+  </footer>
+</div>
+
+<div class="veil" id="veil"><div class="modal" id="modal"></div></div>
+<div id="toast"></div>
+
+<script>
+/* ================================================================
+   Wes's Castle — chamber reservation system
+   Backend: Google Apps Script + Sheet (see WesCastleSync.gs).
+   With no backend URL configured it runs in local demo mode.
+   ================================================================ */
+
+// Paste your deployed Apps Script web app URL here to go live for everyone:
+const API_URL = 'https://script.google.com/macros/s/AKfycby7Gvo_PgBXwp6bbJ272HrHN26RU645psSH5eNSYndw1hut6wwWdyuQrudsqSQjna3-/exec';
+
+const LS_STATE = 'wes-castle-v1';
+const LS_API   = 'wes-castle-api';
+const SS_SESS  = 'wes-castle-sess';
+
+const SEED_ROOMS = [
+  {id:'jack',    name:'Jack',              emoji:'🪣', tag:'Went up the hill and never left. Twin bed, zero candlesticks.', rate:'2 compliments / night'},
+  {id:'jill',    name:'Jill',              emoji:'⛰️', tag:'Came tumbling after. Objectively the better view — don’t tell Jack.', rate:'2 compliments / night'},
+  {id:'media',   name:'The Media Room',    emoji:'🎬', tag:'Fall asleep mid-movie in surround-sound glory. The recliner absolutely counts as a bed.', rate:'1 movie pick / night'},
+  {id:'east',    name:'The East Wing',     emoji:'🌅', tag:'Where the sun rises first and the coffee arrives last. Early risers only.', rate:'3 compliments / night'},
+  {id:'west',    name:'The West Wing',     emoji:'🦅', tag:'Dramatic hallway walk-and-talks included at no extra charge.', rate:'3 compliments / night'},
+  {id:'dungeon', name:'Dawson’s Dungeon', emoji:'⛓️', tag:'No windows. No rules. No refunds. Our most exclusive suite.', rate:'1 unspecified favor / night', dark:true},
+];
+
+/* ---------------- state ---------------- */
+let S = {rooms:[], bookings:[]};          // shared state from backend
+let sess = null;                          // {pin, role:'admin'|'owner', name, rooms:[]}
+try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
+const UIS = {view:'guest', calBase:null}; // calBase = Date, first of month shown
+let BK = null;                            // active booking modal {roomId, mode:'book'|'block', start, end}
+
+function apiUrl(){ return (localStorage.getItem(LS_API) || API_URL || '').trim(); }
+
+/* ---------------- date helpers (all local-time, YYYY-MM-DD) ---------------- */
+function iso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
+function fromIso(s){ const [y,m,d]=s.split('-').map(Number); return new Date(y,m-1,d); }
+function todayIso(){ return iso(new Date()); }
+function addDays(s,n){ const d=fromIso(s); d.setDate(d.getDate()+n); return iso(d); }
+function nightsBetween(a,b){ return Math.round((fromIso(b)-fromIso(a))/86400000); }
+function fmt(s){ return fromIso(s).toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
+function fmtFull(s){ return fromIso(s).toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
+
+/* ---------------- local demo backend ---------------- */
+const Local = {
+  db(){
+    let d=null; try{ d=JSON.parse(localStorage.getItem(LS_STATE)) }catch(e){}
+    if(!d){
+      d = { adminPin:'1234',
+            rooms: SEED_ROOMS.map(r=>({...r, closed:false, ownerName:'', ownerPin:''})),
+            bookings: [] };
+      // a couple of seed reservations so the calendar isn't lonely
+      const t=todayIso();
+      d.bookings.push({id:'b1', roomId:'west', type:'guest', guestName:'Uncle Gary', start:addDays(t,3), end:addDays(t,6), code:'WC-DEMO', createdBy:'guest', createdAt:t});
+      d.bookings.push({id:'b2', roomId:'dungeon', type:'block', guestName:'Sealed for repairs (allegedly)', start:addDays(t,1), end:addDays(t,4), code:'', createdBy:'admin', createdAt:t});
+      localStorage.setItem(LS_STATE, JSON.stringify(d));
+    }
+    return d;
+  },
+  save(d){ localStorage.setItem(LS_STATE, JSON.stringify(d)); },
+  auth(d,pin){
+    if(!pin) return null;
+    if(pin===d.adminPin) return {role:'admin', name:'The Crown', rooms:d.rooms.map(r=>r.id)};
+    const mine = d.rooms.filter(r=>r.ownerPin && r.ownerPin===pin);
+    if(mine.length) return {role:'owner', name:mine[0].ownerName||'Keeper', rooms:mine.map(r=>r.id)};
+    return null;
+  },
+  overlap(d,roomId,start,end){
+    return d.bookings.some(b=>b.roomId===roomId && start<b.end && end>b.start);
+  },
+  handle(action,p){
+    const d=this.db();
+    const pub = ()=>({ok:true,
+      rooms:d.rooms.map(r=>({id:r.id,name:r.name,emoji:r.emoji,tag:r.tag,rate:r.rate,dark:!!r.dark,closed:!!r.closed,ownerName:r.ownerName||''})),
+      bookings:d.bookings.map(b=>({id:b.id,roomId:b.roomId,type:b.type,guestName:b.guestName,start:b.start,end:b.end}))});
+    if(action==='state') return pub();
+    if(action==='login'){
+      const a=this.auth(d,p.pin);
+      return a? {ok:true,...a} : {ok:false,error:'The gate does not recognize that PIN.'};
+    }
+    if(action==='book'){
+      const room=d.rooms.find(r=>r.id===p.roomId);
+      if(!room) return {ok:false,error:'No such chamber.'};
+      if(room.closed) return {ok:false,error:'That chamber is closed by order of the Crown.'};
+      if(!p.guestName||!p.guestName.trim()) return {ok:false,error:'The royal ledger requires a name.'};
+      if(!p.start||!p.end||p.start>=p.end) return {ok:false,error:'Pick a valid check-in and check-out.'};
+      if(p.start<todayIso()) return {ok:false,error:'The castle does not accept bookings in the past. Yet.'};
+      if(this.overlap(d,p.roomId,p.start,p.end)) return {ok:false,error:'Alas — someone claimed those nights first.'};
+      const code='WC-'+Math.random().toString(36).slice(2,6).toUpperCase();
+      d.bookings.push({id:'b'+Date.now(), roomId:p.roomId, type:'guest', guestName:p.guestName.trim(),
+        start:p.start, end:p.end, code, createdBy:'guest', createdAt:todayIso()});
+      this.save(d);
+      return {ok:true, code};
+    }
+    if(action==='cancelByCode'){
+      const i=d.bookings.findIndex(b=>b.code && b.code.toUpperCase()===String(p.code||'').trim().toUpperCase());
+      if(i<0) return {ok:false,error:'No reservation bears that code.'};
+      const b=d.bookings[i]; d.bookings.splice(i,1); this.save(d);
+      return {ok:true, freed:{room:b.roomId, start:b.start, end:b.end}};
+    }
+    // ----- authorized ops below -----
+    const a=this.auth(d,p.pin);
+    if(!a) return {ok:false,error:'The gate does not recognize that PIN.'};
+    const canRoom = id => a.role==='admin' || a.rooms.includes(id);
+    if(action==='block'){
+      if(!canRoom(p.roomId)) return {ok:false,error:'That chamber is not yours to command.'};
+      if(!p.start||!p.end||p.start>=p.end) return {ok:false,error:'Pick a valid date range.'};
+      if(this.overlap(d,p.roomId,p.start,p.end)) return {ok:false,error:'Those dates already have a booking or block. Release it first.'};
+      d.bookings.push({id:'b'+Date.now(), roomId:p.roomId, type:'block', guestName:(p.note||'').trim()||'Blocked',
+        start:p.start, end:p.end, code:'', createdBy:a.role, createdAt:todayIso()});
+      this.save(d); return {ok:true};
+    }
+    if(action==='unbook'){
+      const i=d.bookings.findIndex(b=>b.id===p.bookingId);
+      if(i<0) return {ok:false,error:'Reservation not found.'};
+      if(!canRoom(d.bookings[i].roomId)) return {ok:false,error:'That chamber is not yours to command.'};
+      d.bookings.splice(i,1); this.save(d); return {ok:true};
+    }
+    // ----- admin only -----
+    if(a.role!=='admin') return {ok:false,error:'Only the Crown may do that.'};
+    if(action==='assignOwner'){
+      const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
+      r.ownerName=(p.ownerName||'').trim();
+      if(!p.keepPin) r.ownerPin=(p.ownerPin||'').trim();
+      if(!r.ownerName) r.ownerPin='';
+      this.save(d); return {ok:true};
+    }
+    if(action==='toggleClosed'){
+      const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
+      r.closed=!r.closed; this.save(d); return {ok:true, closed:r.closed};
+    }
+    if(action==='setAdminPin'){
+      if(!p.newPin||String(p.newPin).trim().length<4) return {ok:false,error:'PIN must be at least 4 characters.'};
+      d.adminPin=String(p.newPin).trim(); this.save(d); return {ok:true};
+    }
+    return {ok:false,error:'Unknown decree: '+action};
+  }
+};
+
+/* ---------------- api ---------------- */
+async function api(action, payload){
+  payload = payload || {};
+  if(!apiUrl()) return Local.handle(action, payload);
+  try{
+    const res = await fetch(apiUrl(), {method:'POST',
+      headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({action, ...payload})});
+    return await res.json();
+  }catch(e){
+    return {ok:false, error:'Could not reach the royal ledger. Check the backend URL and your connection.'};
+  }
+}
+
+async function refresh(){
+  const r = await api('state');
+  if(r.ok){
+    // display copy (name/emoji/tag/rate) always comes from SEED_ROOMS so a
+    // mis-encoded backend can never garble the cards; the backend only
+    // supplies live fields (closed, ownerName) and bookings
+    S = {rooms: r.rooms.map(rm=>{
+      const m = SEED_ROOMS.find(x=>x.id===rm.id);
+      return m ? {...rm, name:m.name, emoji:m.emoji, tag:m.tag, rate:m.rate, dark:!!m.dark} : rm;
+    }), bookings: r.bookings};
+    render();
+  }
+  else toast(r.error||'Failed to load.', true);
+}
+
+/* ---------------- helpers ---------------- */
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function room(id){ return S.rooms.find(r=>r.id===id); }
+function occupiedSet(roomId){
+  const set=new Set();
+  for(const b of S.bookings) if(b.roomId===roomId){
+    let d=b.start; while(d<b.end){ set.add(d); d=addDays(d,1); }
+  }
+  return set;
+}
+function occupiedTonight(roomId){ return occupiedSet(roomId).has(todayIso()); }
+
+function toast(msg, isErr){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.className=isErr?'err show':'show';
+  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'), 3400);
+}
+
+/* ---------------- modal plumbing ---------------- */
+const veil=document.getElementById('veil'), modalEl=document.getElementById('modal');
+function openModal(html){ modalEl.innerHTML=html; veil.classList.add('open'); }
+function closeModal(){ veil.classList.remove('open'); BK=null; }
+veil.addEventListener('click', e=>{ if(e.target===veil) closeModal(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+
+/* ---------------- guest view ---------------- */
+function guestView(){
+  return `<div class="rooms">` + S.rooms.map(r=>{
+    const chip = r.closed ? `<span class="chip closed">Closed</span>`
+      : occupiedTonight(r.id) ? `<span class="chip busy">Occupied tonight</span>`
+      : `<span class="chip free">Free tonight</span>`;
+    return `<div class="room ${r.dark?'dungeon':''} ${r.closed?'closed-room':''}">
+      <div class="toprow"><span class="emoji">${r.emoji}</span>${chip}</div>
+      <h3>${esc(r.name)}</h3>
+      <div class="tag">${esc(r.tag)}</div>
+      <div class="rate">Rate: ${esc(r.rate)}</div>
+      ${r.ownerName?`<div class="keeper">Chamber keeper: <b>${esc(r.ownerName)}</b></div>`:''}
+      <div style="margin-top:10px">
+        <button class="btn ${r.dark?'gold':''}" data-act="openBook" data-arg="${r.id}" ${r.closed?'disabled':''}>📅 Check dates &amp; book</button>
+      </div>
+    </div>`;
+  }).join('') + `</div>`;
+}
+
+/* ---------------- calendar ---------------- */
+function monthGrid(base, roomId){
+  const y=base.getFullYear(), m=base.getMonth();
+  const first=new Date(y,m,1), startDow=first.getDay(), dim=new Date(y,m+1,0).getDate();
+  const occ=occupiedSet(roomId), today=todayIso();
+  let cells='';
+  for(let i=0;i<startDow;i++) cells+=`<button class="blank" tabindex="-1"></button>`;
+  for(let day=1; day<=dim; day++){
+    const ds=iso(new Date(y,m,day));
+    const cls=[];
+    if(ds<today) cls.push('off');
+    else if(occ.has(ds)){
+      cls.push('booked');
+      // a booked date can still serve as a check-out day if every night before it (from start) is free
+      if(BK && BK.start && !BK.end && ds>BK.start && rangeFree(roomId,BK.start,ds)) cls.push('edge-ok');
+    }
+    if(ds===today) cls.push('today');
+    if(BK){
+      if(ds===BK.start||ds===BK.end) cls.push('sel');
+      else if(BK.start&&BK.end&&ds>BK.start&&ds<BK.end) cls.push('range');
+    }
+    cells+=`<button class="${cls.join(' ')}" data-act="pickDate" data-arg="${ds}">${day}</button>`;
+  }
+  const mname=first.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  return `<div class="cal"><div class="mhead">${mname}</div>
+    <div class="dow"><div>S</div><div>M</div><div>T</div><div>W</div><div>T</div><div>F</div><div>S</div></div>
+    <div class="days">${cells}</div></div>`;
+}
+function rangeFree(roomId,start,end){ // all nights in [start,end) free
+  const occ=occupiedSet(roomId);
+  let d=start; while(d<end){ if(occ.has(d)) return false; d=addDays(d,1); }
+  return true;
+}
+function calNavLimits(){
+  const now=new Date(); return new Date(now.getFullYear(), now.getMonth(), 1);
+}
+function bookModalHTML(){
+  const r=room(BK.roomId);
+  const b1=UIS.calBase, b2=new Date(b1.getFullYear(), b1.getMonth()+1, 1);
+  const atStart = b1 <= calNavLimits();
+  const isBlock = BK.mode==='block';
+  const forGuest = !isBlock && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
+  let summary='';
+  if(BK.start&&BK.end){
+    const n=nightsBetween(BK.start,BK.end);
+    summary=`<div class="sel-summary"><b>${fmtFull(BK.start)}</b> → <b>${fmtFull(BK.end)}</b> · ${n} night${n>1?'s':''} ${isBlock?'blocked':'in '+esc(r.name)}</div>`;
+  }else if(BK.start){
+    summary=`<div class="sel-summary">Check-in <b>${fmtFull(BK.start)}</b> — now pick a check-out day</div>`;
+  }
+  return `<button class="x" data-act="closeModal">✕</button>
+    <h2>${r.emoji} ${esc(r.name)}</h2>
+    <div class="sub">${isBlock
+      ? 'Blocking dates — guests will not be able to book these nights.'
+      : forGuest
+      ? 'Booking on behalf of a guest — pass them the confirmation code when it appears.'
+      : 'Pick a check-in day, then a check-out day.'}${r.dark&&!isBlock?' The management is not responsible for anything you hear after midnight.':''}</div>
+    <div class="cal-nav">
+      <button data-act="calPrev" ${atStart?'disabled':''}>‹</button>
+      <button data-act="calNext">›</button>
+    </div>
+    <div class="cal-wrap">${monthGrid(b1,BK.roomId)}${monthGrid(b2,BK.roomId)}</div>
+    <div class="legend">
+      <span><i class="l-free"></i> Available</span>
+      <span><i class="l-booked"></i> Taken</span>
+      <span><i class="l-sel"></i> Your selection</span>
+    </div>
+    ${summary}
+    <div class="field">
+      <label>${isBlock?'Reason (optional)':forGuest?'Guest&rsquo;s name':'Your name'}</label>
+      <input id="bk-name" placeholder="${isBlock?'e.g. Family visit, repairs, royal decree…':'e.g. Sir Reginald of the Couch'}" value="${esc(BK.name||'')}">
+    </div>
+    <div class="mrow">
+      <button class="btn ghost" data-act="closeModal">Never mind</button>
+      <button class="btn ${isBlock?'':'gold'}" data-act="${isBlock?'doBlock':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
+        ${isBlock?'🚫 Block these dates':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
+    </div>`;
+}
+function redrawBookModal(){
+  const nameEl=document.getElementById('bk-name');
+  if(nameEl) BK.name=nameEl.value;
+  modalEl.innerHTML=bookModalHTML();
+}
+
+/* ---------------- keeper view ---------------- */
+function keeperView(){
+  const myRooms = S.rooms.filter(r=> sess.role==='admin' || sess.rooms.includes(r.id));
+  const today=todayIso();
+  let html = `<div class="keeper-bar">
+    <span style="font-size:22px">${sess.role==='admin'?'👑':'🗝️'}</span>
+    <span class="who">Keeper mode — <b>${esc(sess.name)}</b> ${sess.role==='admin'
+      ? 'rules the entire castle.'
+      : 'commands ' + myRooms.map(r=>esc(r.name)).join(' & ') + '.'}</span>
+    <button class="btn gold sm" data-act="logout">Leave the keep</button>
+  </div>`;
+
+  for(const r of myRooms){
+    const upcoming = S.bookings
+      .filter(b=>b.roomId===r.id && b.end>today)
+      .sort((a,b)=>a.start<b.start?-1:1);
+    html += `<div class="kcard">
+      <h3>${r.emoji} ${esc(r.name)} ${r.closed?'<span class="chip closed">Closed</span>':''}
+        <span class="spacer"></span>
+        <button class="btn ghost sm" data-act="openBook" data-arg="${r.id}" ${r.closed?'disabled':''}>📅 Book a guest</button>
+        <button class="btn ghost sm" data-act="openBlock" data-arg="${r.id}">🚫 Block dates</button>
+        ${sess.role==='admin'?`<button class="btn ghost sm" data-act="toggleClosed" data-arg="${r.id}">${r.closed?'🔓 Reopen chamber':'🔒 Close chamber'}</button>`:''}
+      </h3>
+      <div class="bk-list">
+        ${upcoming.length ? upcoming.map(b=>`
+          <div class="bk-row">
+            <span class="badge ${b.type}">${b.type==='guest'?'GUEST':'BLOCK'}</span>
+            <span class="name">${esc(b.guestName)}</span>
+            <span class="dates">${fmt(b.start)} → ${fmt(b.end)} · ${nightsBetween(b.start,b.end)}n</span>
+            <button class="btn danger sm" data-act="unbook" data-arg="${b.id}">Release</button>
+          </div>`).join('')
+        : `<div class="empty">No upcoming reservations. The chamber gathers dust majestically.</div>`}
+      </div>
+    </div>`;
+  }
+
+  if(sess.role==='admin'){
+    html += `<div class="kcard"><h3>👥 Chamber keepers</h3>
+      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Assign a keeper to a chamber: give them a name and a PIN. Their PIN unlocks full booking &amp; release rights for that chamber only. Clear both fields to remove them.</p>
+      <div style="overflow-x:auto"><table class="owners">
+        <tr><th>Chamber</th><th>Keeper</th><th>PIN</th><th></th></tr>
+        ${S.rooms.map(r=>`<tr>
+          <td>${r.emoji} ${esc(r.name)}</td>
+          <td><input id="own-name-${r.id}" value="${esc(r.ownerName||'')}" placeholder="—"></td>
+          <td><input id="own-pin-${r.id}" placeholder="set new PIN"></td>
+          <td><button class="btn sm" data-act="saveOwner" data-arg="${r.id}">Save</button></td>
+        </tr>`).join('')}
+      </table></div></div>`;
+
+    html += `<div class="kcard"><h3>⚙️ Royal decrees</h3>
+      <div class="settings-grid">
+        <div class="setting"><h4>Change the Crown&rsquo;s PIN</h4>
+          <p>The master key to everything. Guard it like the good silverware.</p>
+          <div class="inline-form"><input id="new-admin-pin" type="password" placeholder="New admin PIN">
+          <button class="btn sm" data-act="saveAdminPin">Save</button></div></div>
+        <div class="setting"><h4>Royal ledger (backend URL)</h4>
+          <p>${apiUrl()?'Connected — all devices share the same calendar.':'Not connected — running in demo mode on this device. Paste your Apps Script web app URL to go live.'}</p>
+          <div class="inline-form"><input id="api-url-in" placeholder="https://script.google.com/…/exec" value="${esc(localStorage.getItem(LS_API)||'')}">
+          <button class="btn sm" data-act="saveApiUrl">Save</button></div></div>
+      </div></div>`;
+  }
+  return html;
+}
+
+/* ---------------- render ---------------- */
+function render(){
+  document.getElementById('demo-banner').style.display = apiUrl() ? 'none' : 'block';
+  document.getElementById('main').innerHTML =
+    (UIS.view==='keeper' && sess) ? keeperView() : guestView();
+}
+
+/* ---------------- actions ---------------- */
+const ACT = {
+  closeModal(){ closeModal(); },
+
+  openBook(id){
+    const now=new Date();
+    UIS.calBase=new Date(now.getFullYear(), now.getMonth(), 1);
+    BK={roomId:id, mode:'book', start:null, end:null, name:''};
+    openModal(bookModalHTML());
+  },
+  openBlock(id){
+    const now=new Date();
+    UIS.calBase=new Date(now.getFullYear(), now.getMonth(), 1);
+    BK={roomId:id, mode:'block', start:null, end:null, name:''};
+    openModal(bookModalHTML());
+  },
+  calPrev(){ UIS.calBase=new Date(UIS.calBase.getFullYear(), UIS.calBase.getMonth()-1, 1); redrawBookModal(); },
+  calNext(){ UIS.calBase=new Date(UIS.calBase.getFullYear(), UIS.calBase.getMonth()+1, 1); redrawBookModal(); },
+
+  pickDate(ds){
+    if(!BK) return;
+    if(ds<todayIso()) return;
+    const occ=occupiedSet(BK.roomId);
+    if(!BK.start || (BK.start && BK.end)){
+      if(occ.has(ds)) return;
+      BK.start=ds; BK.end=null;
+    }else{
+      if(ds<=BK.start){
+        if(occ.has(ds)) return;
+        BK.start=ds;
+      }else if(rangeFree(BK.roomId,BK.start,ds)){
+        BK.end=ds;
+      }else{
+        toast('Someone already holds a night in that range — pick a shorter stay.', true);
+        if(!occ.has(ds)){ BK.start=ds; BK.end=null; }
+      }
+    }
+    redrawBookModal();
+  },
+
+  async doBook(){
+    const name=document.getElementById('bk-name').value.trim();
+    if(!name){ toast('The royal ledger requires a name.', true); return; }
+    const r=await api('book', {roomId:BK.roomId, start:BK.start, end:BK.end, guestName:name});
+    if(!r.ok){ toast(r.error, true); return; }
+    const rm=room(BK.roomId), n=nightsBetween(BK.start,BK.end);
+    const s=BK.start, e=BK.end; closeModal();
+    openModal(`<button class="x" data-act="closeModal">✕</button>
+      <h2>🎉 The chamber is thine!</h2>
+      <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
+      <p style="font-size:14.5px">Guard this confirmation code — you&rsquo;ll need it to cancel. Screenshot it; there is no email in this castle.</p>
+      <div class="conf-code">${esc(r.code)}</div>
+      <p style="font-size:13px;color:var(--ink2)">Check-in is whenever you show up. Check-out is before the King starts vacuuming pointedly.</p>
+      <div class="mrow"><button class="btn" data-act="closeModal">Huzzah!</button></div>`);
+    refresh();
+  },
+
+  async doBlock(){
+    const note=document.getElementById('bk-name').value.trim();
+    const r=await api('block', {pin:sess.pin, roomId:BK.roomId, start:BK.start, end:BK.end, note});
+    if(!r.ok){ toast(r.error, true); return; }
+    closeModal(); toast('Dates blocked. None shall pass. 🚫');
+    refresh();
+  },
+
+  openCancel(){
+    openModal(`<button class="x" data-act="closeModal">✕</button>
+      <h2>📜 Cancel a reservation</h2>
+      <div class="sub">Enter the confirmation code from when you booked.</div>
+      <div class="field"><label>Confirmation code</label>
+        <input id="cancel-code" placeholder="WC-XXXX" style="text-transform:uppercase"></div>
+      <div class="mrow">
+        <button class="btn ghost" data-act="closeModal">Keep my booking</button>
+        <button class="btn" data-act="doCancel">Cancel reservation</button>
+      </div>`);
+    document.getElementById('cancel-code').focus();
+  },
+  async doCancel(){
+    const code=document.getElementById('cancel-code').value.trim();
+    if(!code){ toast('Enter your confirmation code.', true); return; }
+    const r=await api('cancelByCode',{code});
+    if(!r.ok){ toast(r.error, true); return; }
+    closeModal(); toast('Reservation cancelled. The chamber sighs with relief.');
+    refresh();
+  },
+
+  openKeeper(){
+    if(sess){ UIS.view='keeper'; render(); return; }
+    openModal(`<button class="x" data-act="closeModal">✕</button>
+      <h2>🗝️ Keeper&rsquo;s Entrance</h2>
+      <div class="sub">Admins and chamber keepers only. Guests, kindly use the front gate.</div>
+      <div class="field"><label>PIN</label>
+        <input id="keeper-pin" type="password" placeholder="Speak, friend, and enter"></div>
+      <div class="mrow">
+        <button class="btn ghost" data-act="closeModal">Retreat</button>
+        <button class="btn" data-act="doLogin">Enter the keep</button>
+      </div>`);
+    const el=document.getElementById('keeper-pin');
+    el.focus();
+    el.addEventListener('keydown',e=>{ if(e.key==='Enter') ACT.doLogin(); });
+  },
+  async doLogin(){
+    const pin=document.getElementById('keeper-pin').value.trim();
+    if(!pin) return;
+    const r=await api('login',{pin});
+    if(!r.ok){ toast(r.error, true); return; }
+    sess={pin, role:r.role, name:r.name, rooms:r.rooms};
+    sessionStorage.setItem(SS_SESS, JSON.stringify(sess));
+    closeModal(); UIS.view='keeper'; render();
+    toast(r.role==='admin' ? 'Welcome back, Your Majesty. 👑' : `The keys are yours, ${r.name}. 🗝️`);
+  },
+  logout(){
+    sess=null; sessionStorage.removeItem(SS_SESS);
+    UIS.view='guest'; render();
+  },
+
+  async unbook(id){
+    const b=S.bookings.find(x=>x.id===id);
+    if(!confirm(`Release "${b?b.guestName:''}" (${b?fmt(b.start)+' → '+fmt(b.end):''})? The dates become bookable again.`)) return;
+    const r=await api('unbook',{pin:sess.pin, bookingId:id});
+    if(!r.ok){ toast(r.error, true); return; }
+    toast('Released. The chamber is free once more.');
+    refresh();
+  },
+  async toggleClosed(id){
+    const r=await api('toggleClosed',{pin:sess.pin, roomId:id});
+    if(!r.ok){ toast(r.error, true); return; }
+    toast(r.closed?'Chamber closed by order of the Crown. 🔒':'Chamber reopened. 🔓');
+    refresh();
+  },
+  async saveOwner(id){
+    const name=document.getElementById('own-name-'+id).value.trim();
+    const pin=document.getElementById('own-pin-'+id).value.trim();
+    if(name && !pin && !room(id).ownerName){ toast('Set a PIN for the new keeper.', true); return; }
+    if(name && pin && pin.length<4){ toast('Keeper PINs need at least 4 characters.', true); return; }
+    // keep existing pin if name kept and pin field left blank
+    const payload={pin:sess.pin, roomId:id, ownerName:name, ownerPin:pin};
+    if(name && !pin) payload.keepPin=true;
+    const r=await api('assignOwner',payload);
+    if(!r.ok){ toast(r.error, true); return; }
+    toast(name?`${name} now keeps ${room(id).name}. 🗝️`:'Keeper removed.');
+    refresh();
+  },
+  async saveAdminPin(){
+    const p=document.getElementById('new-admin-pin').value.trim();
+    const r=await api('setAdminPin',{pin:sess.pin, newPin:p});
+    if(!r.ok){ toast(r.error, true); return; }
+    sess.pin=p; sessionStorage.setItem(SS_SESS, JSON.stringify(sess));
+    toast('The Crown’s PIN has been changed. Tell no one.');
+  },
+  saveApiUrl(){
+    const u=document.getElementById('api-url-in').value.trim();
+    if(u) localStorage.setItem(LS_API,u); else localStorage.removeItem(LS_API);
+    toast(u?'Royal ledger connected. Refreshing…':'Back to demo mode.');
+    refresh();
+  },
+};
+
+/* one delegated dispatcher — never stopPropagation inside [data-act] */
+document.addEventListener('click', e=>{
+  const el=e.target.closest('[data-act]');
+  if(!el || el.disabled) return;
+  const fn=ACT[el.dataset.act];
+  if(fn) fn.call(ACT, el.dataset.arg);
+});
+
+/* ---------------- boot ---------------- */
+refresh();
+setInterval(()=>{ if(!veil.classList.contains('open')) refresh(); }, 60000);
+window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(); });
+</script>
+</body>
+</html>
