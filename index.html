@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Wes's Castle — Book Thy Chamber</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>">
+<meta name="theme-color" content="#4c2a85">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Wes's Castle">
 <style>
 :root{
   --parch:#f6f1e6; --card:#fffdf7; --ink:#2b2338; --ink2:#6b6078; --line:#e6dcc6;
@@ -59,6 +66,7 @@ h1{font-size:clamp(34px,6vw,52px);letter-spacing:.5px;color:var(--purple-deep);m
 .room.dungeon .tag{color:#a99cc4}
 .room.dungeon .keeper{color:#a99cc4}.room.dungeon .keeper b{color:#e8e2f4}
 .room.closed-room{opacity:.65}
+.room.dim{opacity:.55}
 .room.closed-room::after{content:'CLOSED BY ORDER OF THE CROWN';position:absolute;top:18px;right:-44px;transform:rotate(35deg);background:var(--purple);color:#fff;font-size:9.5px;font-weight:800;letter-spacing:1px;padding:4px 48px}
 
 /* ---------- footer ---------- */
@@ -166,7 +174,7 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
   <div id="main"></div>
   <footer>
     <div class="links">
-      <button data-act="openCancel">📜 Cancel a reservation</button>
+      <button data-act="openManage">📜 Find my reservation</button>
       <button data-act="openKeeper">🗝️ Keeper&rsquo;s Entrance</button>
     </div>
     <div>No gold changes hands. Payment is accepted in compliments, favors, and doing your own dishes.</div>
@@ -204,7 +212,8 @@ let S = {rooms:[], bookings:[]};          // shared state from backend
 let sess = null;                          // {pin, role:'admin'|'owner', name, rooms:[]}
 try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
 const UIS = {view:'guest', calBase:null}; // calBase = Date, first of month shown
-let BK = null;                            // active booking modal {roomId, mode:'book'|'block', start, end}
+let BK = null;                            // active booking modal {roomId, mode:'book'|'block'|'search', start, end}
+let SQ = {start:null, end:null};          // applied date-first search query
 
 function apiUrl(){ return (localStorage.getItem(LS_API) || API_URL || '').trim(); }
 
@@ -273,6 +282,11 @@ const Local = {
       if(i<0) return {ok:false,error:'No reservation bears that code.'};
       const b=d.bookings[i]; d.bookings.splice(i,1); this.save(d);
       return {ok:true, freed:{room:b.roomId, start:b.start, end:b.end}};
+    }
+    if(action==='findByCode'){
+      const b=d.bookings.find(b=>b.code && b.code.toUpperCase()===String(p.code||'').trim().toUpperCase());
+      if(!b) return {ok:false,error:'No reservation bears that code.'};
+      return {ok:true, booking:{roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code}};
     }
     // ----- authorized ops below -----
     const a=this.auth(d,p.pin);
@@ -354,6 +368,54 @@ function occupiedSet(roomId){
 }
 function occupiedTonight(roomId){ return occupiedSet(roomId).has(todayIso()); }
 
+/* ---------------- my stays (this device) + calendar export ---------------- */
+const LS_STAYS='wes-castle-mystays';
+let MG=null; // reservation currently shown in the manage modal
+function myStays(){ try{ return JSON.parse(localStorage.getItem(LS_STAYS))||[] }catch(e){ return [] } }
+function saveStays(a){ localStorage.setItem(LS_STAYS, JSON.stringify(a)); }
+function addStay(st){ saveStays(myStays().filter(s=>s.code!==st.code).concat(st)); }
+function removeStay(code){ saveStays(myStays().filter(s=>s.code!==code)); }
+function currentStays(){
+  let a=myStays().filter(s=>s.end>todayIso());
+  if(S.rooms.length){ // state loaded — drop stays cancelled/released elsewhere
+    a=a.filter(s=>S.bookings.some(b=>b.roomId===s.roomId&&b.start===s.start&&b.end===s.end));
+    saveStays(a);
+  }
+  return a.sort((x,y)=>x.start<y.start?-1:1);
+}
+function stayFor(code){
+  if(MG && MG.code===code) return MG;
+  return myStays().find(s=>s.code===code);
+}
+function icsEsc(s){ return String(s).replace(/\\/g,'\\\\').replace(/[,;]/g,m=>'\\'+m).replace(/\n/g,'\\n'); }
+function buildIcs(st){
+  const r=room(st.roomId)||{name:st.roomId};
+  const ymd=x=>x.replace(/-/g,'');
+  const stamp=new Date().toISOString().replace(/[-:]/g,'').replace(/\.\d+/,'');
+  return ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Wes’s Castle//EN','BEGIN:VEVENT',
+    'UID:'+st.code+'@wes-castle','DTSTAMP:'+stamp,
+    'DTSTART;VALUE=DATE:'+ymd(st.start),'DTEND;VALUE=DATE:'+ymd(st.end),
+    'SUMMARY:'+icsEsc('🏰 Wes’s Castle — '+r.name),
+    'DESCRIPTION:'+icsEsc('Guest: '+st.guestName+'\nConfirmation code: '+st.code+'\nCheck-out before the King starts vacuuming pointedly.'),
+    'END:VEVENT','END:VCALENDAR'].join('\r\n');
+}
+function manageHTML(){
+  const r=room(MG.roomId)||{name:MG.roomId,emoji:'🏰'};
+  const n=nightsBetween(MG.start,MG.end);
+  return `<button class="x" data-act="closeModal">✕</button>
+    <h2>${r.emoji} ${esc(r.name)}</h2>
+    <div class="sub">Reserved for <b>${esc(MG.guestName)}</b> · code ${esc(MG.code)}</div>
+    <div class="sel-summary"><b>${fmtFull(MG.start)}</b> → <b>${fmtFull(MG.end)}</b> · ${n} night${n>1?'s':''}</div>
+    <div class="mrow" style="justify-content:center;margin-top:16px">
+      <button class="btn ghost" data-act="addIcs" data-arg="${esc(MG.code)}">📅 Apple / Outlook</button>
+      <button class="btn ghost" data-act="addGcal" data-arg="${esc(MG.code)}">📆 Google Calendar</button>
+    </div>
+    <div class="mrow">
+      <button class="btn danger" data-act="doCancel" data-arg="${esc(MG.code)}">Cancel reservation</button>
+      <button class="btn" data-act="closeModal">Done</button>
+    </div>`;
+}
+
 function toast(msg, isErr){
   const t=document.getElementById('toast');
   t.textContent=msg; t.className=isErr?'err show':'show';
@@ -363,25 +425,55 @@ function toast(msg, isErr){
 /* ---------------- modal plumbing ---------------- */
 const veil=document.getElementById('veil'), modalEl=document.getElementById('modal');
 function openModal(html){ modalEl.innerHTML=html; veil.classList.add('open'); }
-function closeModal(){ veil.classList.remove('open'); BK=null; }
+function closeModal(){ veil.classList.remove('open'); BK=null; MG=null; }
 veil.addEventListener('click', e=>{ if(e.target===veil) closeModal(); });
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
 
 /* ---------------- guest view ---------------- */
 function guestView(){
-  return `<div class="rooms">` + S.rooms.map(r=>{
+  const stays=currentStays();
+  const stayCard = !stays.length ? '' : `<div class="kcard" style="margin-top:26px">
+    <h3>🧳 Your upcoming stays</h3>
+    <div class="bk-list">${stays.map(s=>{const r=room(s.roomId)||{};return `
+      <div class="bk-row">
+        <span style="font-size:20px">${r.emoji||'🏰'}</span>
+        <span class="name">${esc(r.name||s.roomId)} <span style="color:var(--ink2);font-weight:400;font-size:12.5px">· ${esc(s.guestName)} · code ${esc(s.code)}</span></span>
+        <span class="dates">${fmt(s.start)} → ${fmt(s.end)} · ${nightsBetween(s.start,s.end)}n</span>
+        <button class="btn ghost sm" data-act="addIcs" data-arg="${esc(s.code)}">📅 iCal</button>
+        <button class="btn ghost sm" data-act="addGcal" data-arg="${esc(s.code)}">📆 Google</button>
+        <button class="btn danger sm" data-act="manageByCode" data-arg="${esc(s.code)}">Manage</button>
+      </div>`}).join('')}</div>
+    <div style="font-size:12px;color:var(--ink2);margin-top:8px">Remembered on this device. From another device, use “Find my reservation” below with your code.</div>
+  </div>`;
+  const q = (SQ.start && SQ.end) ? SQ : null;
+  const freeCount = q ? S.rooms.filter(r=>!r.closed && rangeFree(r.id,q.start,q.end)).length : 0;
+  const nQ = q ? nightsBetween(q.start,q.end) : 0;
+  const searchCard = `<div class="kcard" style="margin-top:${stays.length?'18':'26'}px">
+    <h3>🔭 When art thou staying?<span class="spacer"></span>
+      ${q ? `<button class="btn sm" data-act="openSearch">${fmt(q.start)} → ${fmt(q.end)} · change</button>
+             <button class="btn ghost sm" data-act="clearSearch">✕ Clear</button>`
+          : `<button class="btn sm" data-act="openSearch">📅 Pick your dates</button>`}
+    </h3>
+    <div style="font-size:13px;color:var(--ink2);margin-top:6px">${q
+      ? `<b style="color:var(--ink)">${freeCount} of ${S.rooms.length}</b> chambers free for ${nQ} night${nQ>1?'s':''}, ${fmt(q.start)} → ${fmt(q.end)}.`
+      : 'Enter your dates to see every free chamber at once — or browse below and pick dates per chamber.'}</div>
+  </div>`;
+  return stayCard + searchCard + `<div class="rooms">` + S.rooms.map(r=>{
+    const avail = q && !r.closed ? rangeFree(r.id, q.start, q.end) : null;
     const chip = r.closed ? `<span class="chip closed">Closed</span>`
+      : q ? (avail ? `<span class="chip free">✓ Free for your dates</span>` : `<span class="chip busy">✗ Taken those nights</span>`)
       : occupiedTonight(r.id) ? `<span class="chip busy">Occupied tonight</span>`
       : `<span class="chip free">Free tonight</span>`;
-    return `<div class="room ${r.dark?'dungeon':''} ${r.closed?'closed-room':''}">
+    const btn = q && avail
+      ? `<button class="btn ${r.dark?'gold':''}" data-act="bookRange" data-arg="${r.id}">🏰 Book ${fmt(q.start)} → ${fmt(q.end)}</button>`
+      : `<button class="btn ${r.dark?'gold':''}" data-act="openBook" data-arg="${r.id}" ${r.closed?'disabled':''}>📅 Check dates &amp; book</button>`;
+    return `<div class="room ${r.dark?'dungeon':''} ${r.closed?'closed-room':''} ${avail===false?'dim':''}">
       <div class="toprow"><span class="emoji">${r.emoji}</span>${chip}</div>
       <h3>${esc(r.name)}</h3>
       <div class="tag">${esc(r.tag)}</div>
       <div class="rate">Rate: ${esc(r.rate)}</div>
       ${r.ownerName?`<div class="keeper">Chamber keeper: <b>${esc(r.ownerName)}</b></div>`:''}
-      <div style="margin-top:10px">
-        <button class="btn ${r.dark?'gold':''}" data-act="openBook" data-arg="${r.id}" ${r.closed?'disabled':''}>📅 Check dates &amp; book</button>
-      </div>
+      <div style="margin-top:10px">${btn}</div>
     </div>`;
   }).join('') + `</div>`;
 }
@@ -423,21 +515,24 @@ function calNavLimits(){
   const now=new Date(); return new Date(now.getFullYear(), now.getMonth(), 1);
 }
 function bookModalHTML(){
-  const r=room(BK.roomId);
+  const isSearch = BK.mode==='search';
+  const r = isSearch ? {emoji:'🔭', name:'When art thou staying?', dark:false} : room(BK.roomId);
   const b1=UIS.calBase, b2=new Date(b1.getFullYear(), b1.getMonth()+1, 1);
   const atStart = b1 <= calNavLimits();
   const isBlock = BK.mode==='block';
-  const forGuest = !isBlock && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
+  const forGuest = !isBlock && !isSearch && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
   let summary='';
   if(BK.start&&BK.end){
     const n=nightsBetween(BK.start,BK.end);
-    summary=`<div class="sel-summary"><b>${fmtFull(BK.start)}</b> → <b>${fmtFull(BK.end)}</b> · ${n} night${n>1?'s':''} ${isBlock?'blocked':'in '+esc(r.name)}</div>`;
+    summary=`<div class="sel-summary"><b>${fmtFull(BK.start)}</b> → <b>${fmtFull(BK.end)}</b> · ${n} night${n>1?'s':''} ${isBlock?'blocked':isSearch?'· all chambers':'in '+esc(r.name)}</div>`;
   }else if(BK.start){
     summary=`<div class="sel-summary">Check-in <b>${fmtFull(BK.start)}</b> — now pick a check-out day</div>`;
   }
   return `<button class="x" data-act="closeModal">✕</button>
     <h2>${r.emoji} ${esc(r.name)}</h2>
-    <div class="sub">${isBlock
+    <div class="sub">${isSearch
+      ? 'Choose check-in and check-out — then the chambers will show who&rsquo;s free.'
+      : isBlock
       ? 'Blocking dates — guests will not be able to book these nights.'
       : forGuest
       ? 'Booking on behalf of a guest — pass them the confirmation code when it appears.'
@@ -453,14 +548,14 @@ function bookModalHTML(){
       <span><i class="l-sel"></i> Your selection</span>
     </div>
     ${summary}
-    <div class="field">
+    ${isSearch?'':`<div class="field">
       <label>${isBlock?'Reason (optional)':forGuest?'Guest&rsquo;s name':'Your name'}</label>
       <input id="bk-name" placeholder="${isBlock?'e.g. Family visit, repairs, royal decree…':'e.g. Sir Reginald of the Couch'}" value="${esc(BK.name||'')}">
-    </div>
+    </div>`}
     <div class="mrow">
       <button class="btn ghost" data-act="closeModal">Never mind</button>
-      <button class="btn ${isBlock?'':'gold'}" data-act="${isBlock?'doBlock':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
-        ${isBlock?'🚫 Block these dates':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
+      <button class="btn ${isBlock?'':'gold'}" data-act="${isSearch?'doSearch':isBlock?'doBlock':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
+        ${isSearch?'🔭 Show available chambers':isBlock?'🚫 Block these dates':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
     </div>`;
 }
 function redrawBookModal(){
@@ -556,6 +651,25 @@ const ACT = {
     BK={roomId:id, mode:'block', start:null, end:null, name:''};
     openModal(bookModalHTML());
   },
+  openSearch(){
+    const base = SQ.start ? fromIso(SQ.start) : new Date();
+    UIS.calBase=new Date(base.getFullYear(), base.getMonth(), 1);
+    BK={roomId:null, mode:'search', start:SQ.start, end:SQ.end, name:''};
+    openModal(bookModalHTML());
+  },
+  doSearch(){
+    if(!(BK && BK.start && BK.end)) return;
+    SQ={start:BK.start, end:BK.end};
+    closeModal(); render();
+  },
+  clearSearch(){ SQ={start:null, end:null}; render(); },
+  bookRange(id){
+    if(!SQ.start||!SQ.end) return ACT.openBook(id);
+    const d=fromIso(SQ.start);
+    UIS.calBase=new Date(d.getFullYear(), d.getMonth(), 1);
+    BK={roomId:id, mode:'book', start:SQ.start, end:SQ.end, name:''};
+    openModal(bookModalHTML());
+  },
   calPrev(){ UIS.calBase=new Date(UIS.calBase.getFullYear(), UIS.calBase.getMonth()-1, 1); redrawBookModal(); },
   calNext(){ UIS.calBase=new Date(UIS.calBase.getFullYear(), UIS.calBase.getMonth()+1, 1); redrawBookModal(); },
 
@@ -587,11 +701,16 @@ const ACT = {
     if(!r.ok){ toast(r.error, true); return; }
     const rm=room(BK.roomId), n=nightsBetween(BK.start,BK.end);
     const s=BK.start, e=BK.end; closeModal();
+    addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e});
     openModal(`<button class="x" data-act="closeModal">✕</button>
       <h2>🎉 The chamber is thine!</h2>
       <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
-      <p style="font-size:14.5px">Guard this confirmation code — you&rsquo;ll need it to cancel. Screenshot it; there is no email in this castle.</p>
+      <p style="font-size:14.5px">Guard this confirmation code — it manages your stay from any device. This device will also remember it for you.</p>
       <div class="conf-code">${esc(r.code)}</div>
+      <div class="mrow" style="justify-content:center">
+        <button class="btn ghost" data-act="addIcs" data-arg="${esc(r.code)}">📅 Apple / Outlook</button>
+        <button class="btn ghost" data-act="addGcal" data-arg="${esc(r.code)}">📆 Google Calendar</button>
+      </div>
       <p style="font-size:13px;color:var(--ink2)">Check-in is whenever you show up. Check-out is before the King starts vacuuming pointedly.</p>
       <div class="mrow"><button class="btn" data-act="closeModal">Huzzah!</button></div>`);
     refresh();
@@ -605,25 +724,62 @@ const ACT = {
     refresh();
   },
 
-  openCancel(){
+  openManage(){
     openModal(`<button class="x" data-act="closeModal">✕</button>
-      <h2>📜 Cancel a reservation</h2>
-      <div class="sub">Enter the confirmation code from when you booked.</div>
+      <h2>📜 Find my reservation</h2>
+      <div class="sub">Enter the confirmation code from when you booked — view your stay, add it to your calendar, or cancel it.</div>
       <div class="field"><label>Confirmation code</label>
-        <input id="cancel-code" placeholder="WC-XXXX" style="text-transform:uppercase"></div>
+        <input id="find-code" placeholder="WC-XXXX" style="text-transform:uppercase"></div>
       <div class="mrow">
-        <button class="btn ghost" data-act="closeModal">Keep my booking</button>
-        <button class="btn" data-act="doCancel">Cancel reservation</button>
+        <button class="btn ghost" data-act="closeModal">Retreat</button>
+        <button class="btn" data-act="doFind">🔎 Find it</button>
       </div>`);
-    document.getElementById('cancel-code').focus();
+    const el=document.getElementById('find-code');
+    el.focus();
+    el.addEventListener('keydown',e=>{ if(e.key==='Enter') ACT.doFind(); });
   },
-  async doCancel(){
-    const code=document.getElementById('cancel-code').value.trim();
+  async doFind(codeArg){
+    const code=(typeof codeArg==='string'&&codeArg ? codeArg : document.getElementById('find-code')?.value||'').trim();
     if(!code){ toast('Enter your confirmation code.', true); return; }
+    const r=await api('findByCode',{code});
+    if(!r.ok){
+      // older backends without findByCode fall through to the PIN gate or unknown-action
+      toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
+        ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+        : r.error, true);
+      return;
+    }
+    MG=r.booking;
+    openModal(manageHTML());
+  },
+  manageByCode(code){ ACT.doFind(code); },
+  async doCancel(code){
+    code = code || (MG&&MG.code);
+    if(!code) return;
+    if(!confirm('Cancel this reservation? The dates become bookable again.')) return;
     const r=await api('cancelByCode',{code});
     if(!r.ok){ toast(r.error, true); return; }
+    removeStay(code);
     closeModal(); toast('Reservation cancelled. The chamber sighs with relief.');
     refresh();
+  },
+  addIcs(code){
+    const st=stayFor(code); if(!st){ toast('Reservation details not found.', true); return; }
+    const blob=new Blob([buildIcs(st)],{type:'text/calendar;charset=utf-8'});
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob); a.download='wes-castle-'+st.code+'.ics';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    toast('Calendar file downloaded — open it and the stay lands in your calendar. 📅');
+  },
+  addGcal(code){
+    const st=stayFor(code); if(!st){ toast('Reservation details not found.', true); return; }
+    const r=room(st.roomId)||{name:st.roomId};
+    const u='https://calendar.google.com/calendar/render?action=TEMPLATE'
+      +'&text='+encodeURIComponent('🏰 Wes’s Castle — '+r.name)
+      +'&dates='+st.start.replace(/-/g,'')+'/'+st.end.replace(/-/g,'')
+      +'&details='+encodeURIComponent('Guest: '+st.guestName+'\nConfirmation code: '+st.code);
+    window.open(u,'_blank');
   },
 
   openKeeper(){
@@ -707,6 +863,9 @@ document.addEventListener('click', e=>{
 });
 
 /* ---------------- boot ---------------- */
+// PWA: register only over http(s) — double-clicking the file locally still works
+if('serviceWorker' in navigator && /^https?:$/.test(location.protocol))
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
 refresh();
 setInterval(()=>{ if(!veil.classList.contains('open')) refresh(); }, 60000);
 window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(); });
