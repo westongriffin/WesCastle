@@ -432,6 +432,16 @@ function manageHTML(){
     </div>`;
 }
 
+/* while a decree travels to the ledger (~5s), the clicked button shows
+   progress and refuses double-taps; returns a restore function */
+function pending(label){
+  const b=ACT._el;
+  if(!b || !b.isConnected) return ()=>{};
+  const orig=b.innerHTML;
+  b.disabled=true; b.innerHTML=label||'⏳ One moment…';
+  return ()=>{ if(b.isConnected){ b.disabled=false; b.innerHTML=orig; } };
+}
+
 function toast(msg, isErr){
   const t=document.getElementById('toast');
   t.textContent=msg; t.className=isErr?'err show':'show';
@@ -729,11 +739,15 @@ const ACT = {
     if(!name){ toast('The royal ledger requires a name.', true); return; }
     const email=(document.getElementById('bk-email')?.value||'').trim();
     if(email && !email.includes('@')){ toast('That email looks off — fix it or leave it blank.', true); return; }
+    const done=pending('⏳ Claiming…');
     const r=await api('book', {roomId:BK.roomId, start:BK.start, end:BK.end, guestName:name, guestEmail:email});
-    if(!r.ok){ toast(r.error, true); return; }
+    if(!r.ok){ done(); toast(r.error, true); return; }
     const rm=room(BK.roomId), n=nightsBetween(BK.start,BK.end);
     const s=BK.start, e=BK.end; closeModal();
     addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e});
+    // show it on the calendar instantly; the background refresh reconciles ids
+    S.bookings.push({id:'tmp'+Date.now(), roomId:rm.id, type:'guest', guestName:name, start:s, end:e});
+    render();
     openModal(`<button class="x" data-act="closeModal">✕</button>
       <h2>🎉 The chamber is thine!</h2>
       <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
@@ -750,9 +764,12 @@ const ACT = {
 
   async doBlock(){
     const note=document.getElementById('bk-name').value.trim();
-    const r=await api('block', {pin:sess.pin, roomId:BK.roomId, start:BK.start, end:BK.end, note});
-    if(!r.ok){ toast(r.error, true); return; }
-    closeModal(); toast('Dates blocked. None shall pass. 🚫');
+    const done=pending('⏳ Blocking…');
+    const roomId=BK.roomId, s=BK.start, e=BK.end;
+    const r=await api('block', {pin:sess.pin, roomId, start:s, end:e, note});
+    if(!r.ok){ done(); toast(r.error, true); return; }
+    S.bookings.push({id:'tmp'+Date.now(), roomId, type:'block', guestName:note||'Blocked', start:s, end:e});
+    closeModal(); render(); toast('Dates blocked. None shall pass. 🚫');
     refresh(true);
   },
 
@@ -773,7 +790,9 @@ const ACT = {
   async doFind(codeArg){
     const code=(typeof codeArg==='string'&&codeArg ? codeArg : document.getElementById('find-code')?.value||'').trim();
     if(!code){ toast('Enter your confirmation code.', true); return; }
+    const done=pending('🔎 Searching…');
     const r=await api('findByCode',{code});
+    done();
     if(!r.ok){
       // older backends without findByCode fall through to the PIN gate or unknown-action
       toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
@@ -789,10 +808,13 @@ const ACT = {
     code = code || (MG&&MG.code);
     if(!code) return;
     if(!confirm('Cancel this reservation? The dates become bookable again.')) return;
+    const st=stayFor(code); // capture before the modal closes
+    const done=pending('⏳ Cancelling…');
     const r=await api('cancelByCode',{code});
-    if(!r.ok){ toast(r.error, true); return; }
+    if(!r.ok){ done(); toast(r.error, true); return; }
     removeStay(code);
-    closeModal(); toast('Reservation cancelled. The chamber sighs with relief.');
+    if(st) S.bookings=S.bookings.filter(b=>!(b.roomId===st.roomId&&b.start===st.start&&b.end===st.end));
+    closeModal(); render(); toast('Reservation cancelled. The chamber sighs with relief.');
     refresh(true);
   },
   addIcs(code){
@@ -832,7 +854,9 @@ const ACT = {
   async doLogin(){
     const pin=document.getElementById('keeper-pin').value.trim();
     if(!pin) return;
+    const done=pending('⏳ Unlocking…');
     const r=await api('login',{pin});
+    done();
     if(!r.ok){ toast(r.error, true); return; }
     sess={pin, role:r.role, name:r.name, rooms:r.rooms};
     sessionStorage.setItem(SS_SESS, JSON.stringify(sess));
@@ -847,14 +871,20 @@ const ACT = {
   async unbook(id){
     const b=S.bookings.find(x=>x.id===id);
     if(!confirm(`Release "${b?b.guestName:''}" (${b?fmt(b.start)+' → '+fmt(b.end):''})? The dates become bookable again.`)) return;
+    const done=pending('⏳ Releasing…');
     const r=await api('unbook',{pin:sess.pin, bookingId:id});
-    if(!r.ok){ toast(r.error, true); return; }
+    if(!r.ok){ done(); toast(r.error, true); return; }
+    S.bookings=S.bookings.filter(x=>x.id!==id);
+    render();
     toast('Released. The chamber is free once more.');
     refresh(true);
   },
   async toggleClosed(id){
+    const done=pending('⏳…');
     const r=await api('toggleClosed',{pin:sess.pin, roomId:id});
-    if(!r.ok){ toast(r.error, true); return; }
+    if(!r.ok){ done(); toast(r.error, true); return; }
+    room(id).closed=r.closed;
+    render();
     toast(r.closed?'Chamber closed by order of the Crown. 🔒':'Chamber reopened. 🔓');
     refresh(true);
   },
@@ -868,33 +898,47 @@ const ACT = {
     const payload={pin:sess.pin, roomId:id, ownerName:name, ownerPin:pin, ownerNotify:nt==='-'?'':nt};
     if(name && !pin) payload.keepPin=true;
     if(!nt) payload.keepNotify=true;
+    const done=pending('⏳…');
     const r=await api('assignOwner',payload);
-    if(!r.ok){ toast(r.error, true); return; }
-    toast(name?`${name} now keeps ${room(id).name}. 🗝️`:'Keeper removed.');
+    if(!r.ok){ done(); toast(r.error, true); return; }
+    const rm=room(id);
+    rm.ownerName=name;
+    if(!name) rm.ownerNotifySet=false;
+    else if(nt && nt!=='-') rm.ownerNotifySet=nt.includes('@');
+    else if(nt==='-') rm.ownerNotifySet=false;
+    render();
+    toast(name?`${name} now keeps ${rm.name}. 🗝️`:'Keeper removed.');
     refresh(true);
   },
   async saveAdminPin(){
     const p=document.getElementById('new-admin-pin').value.trim();
+    const done=pending('⏳…');
     const r=await api('setAdminPin',{pin:sess.pin, newPin:p});
+    done();
     if(!r.ok){ toast(r.error, true); return; }
     sess.pin=p; sessionStorage.setItem(SS_SESS, JSON.stringify(sess));
     toast('The Crown’s PIN has been changed. Tell no one.');
   },
   async saveAdminNotify(){
     const v=document.getElementById('admin-notify').value.trim();
+    const done=pending('⏳…');
     const r=await api('setAdminNotify',{pin:sess.pin, value:v});
+    done();
     if(!r.ok){
       toast(/Unknown decree/.test(r.error||'')
         ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
         : r.error, true);
       return;
     }
+    S.adminNotifySet=!!r.set;
+    render();
     toast(r.set?'The Crown shall be notified of all castle business. 📯':'Crown notifications turned off.');
     refresh(true);
   },
   async testNotify(){
-    toast('Dispatching a test raven… 🐦');
+    const done=pending('🐦 Flying…');
     const r=await api('testNotify',{pin:sess.pin});
+    done();
     if(!r.ok){
       toast(/Unknown decree/.test(r.error||'')
         ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
@@ -916,7 +960,7 @@ document.addEventListener('click', e=>{
   const el=e.target.closest('[data-act]');
   if(!el || el.disabled) return;
   const fn=ACT[el.dataset.act];
-  if(fn) fn.call(ACT, el.dataset.arg);
+  if(fn){ ACT._el=el; fn.call(ACT, el.dataset.arg); }
 });
 
 /* ---------------- boot ---------------- */
