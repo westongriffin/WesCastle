@@ -322,6 +322,9 @@ const Local = {
       d.adminNotify=(p.value||'').trim(); this.save(d);
       return {ok:true, set:d.adminNotify.includes('@')};
     }
+    if(action==='testNotify'){
+      return {ok:false,error:'Demo mode has no messenger ravens — connect the royal ledger to send real notifications.'};
+    }
     if(action==='toggleClosed'){
       const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
       r.closed=!r.closed; this.save(d); return {ok:true, closed:r.closed};
@@ -348,19 +351,25 @@ async function api(action, payload){
   }
 }
 
-async function refresh(){
+const LS_CACHE = 'wes-castle-cache';
+function adoptState(r){
+  // display copy (name/emoji/tag/rate) always comes from SEED_ROOMS so a
+  // mis-encoded backend can never garble the cards; the backend only
+  // supplies live fields (closed, ownerName) and bookings
+  S = {rooms: r.rooms.map(rm=>{
+    const m = SEED_ROOMS.find(x=>x.id===rm.id);
+    return m ? {...rm, name:m.name, emoji:m.emoji, tag:m.tag, rate:m.rate, dark:!!m.dark} : rm;
+  }), bookings: r.bookings, adminNotifySet: !!r.adminNotifySet};
+}
+// silent=true → background poll: never bother the user about a blip
+async function refresh(silent){
   const r = await api('state');
   if(r.ok){
-    // display copy (name/emoji/tag/rate) always comes from SEED_ROOMS so a
-    // mis-encoded backend can never garble the cards; the backend only
-    // supplies live fields (closed, ownerName) and bookings
-    S = {rooms: r.rooms.map(rm=>{
-      const m = SEED_ROOMS.find(x=>x.id===rm.id);
-      return m ? {...rm, name:m.name, emoji:m.emoji, tag:m.tag, rate:m.rate, dark:!!m.dark} : rm;
-    }), bookings: r.bookings, adminNotifySet: !!r.adminNotifySet};
+    adoptState(r);
+    try{ localStorage.setItem(LS_CACHE, JSON.stringify({rooms:r.rooms, bookings:r.bookings, adminNotifySet:!!r.adminNotifySet})); }catch(e){}
     render();
   }
-  else toast(r.error||'Failed to load.', true);
+  else if(!silent) toast(r.error||'Failed to load.', true);
 }
 
 /* ---------------- helpers ---------------- */
@@ -426,7 +435,8 @@ function manageHTML(){
 function toast(msg, isErr){
   const t=document.getElementById('toast');
   t.textContent=msg; t.className=isErr?'err show':'show';
-  clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'), 3400);
+  clearTimeout(t._t); // long diagnostics get time to be read
+  t._t=setTimeout(()=>t.classList.remove('show'), Math.min(10000, Math.max(3400, msg.length*45)));
 }
 
 /* ---------------- modal plumbing ---------------- */
@@ -459,7 +469,7 @@ function guestView(){
     <h3>🔭 When art thou staying?<span class="spacer"></span>
       ${q ? `<button class="btn sm" data-act="openSearch">${fmt(q.start)} → ${fmt(q.end)} · change</button>
              <button class="btn ghost sm" data-act="clearSearch">✕ Clear</button>`
-          : `<button class="btn sm" data-act="openSearch">📅 Pick your dates</button>`}
+          : `<button class="btn sm" data-act="openSearch" ${S.placeholder?'disabled':''}>📅 Pick your dates</button>`}
     </h3>
     <div style="font-size:13px;color:var(--ink2);margin-top:6px">${q
       ? `<b style="color:var(--ink)">${freeCount} of ${S.rooms.length}</b> chambers free for ${nQ} night${nQ>1?'s':''}, ${fmt(q.start)} → ${fmt(q.end)}.`
@@ -467,13 +477,14 @@ function guestView(){
   </div>`;
   return stayCard + searchCard + `<div class="rooms">` + S.rooms.map(r=>{
     const avail = q && !r.closed ? rangeFree(r.id, q.start, q.end) : null;
-    const chip = r.closed ? `<span class="chip closed">Closed</span>`
+    const chip = S.placeholder ? `<span class="chip" style="background:#f0ede4;color:#8a8474">Checking…</span>`
+      : r.closed ? `<span class="chip closed">Closed</span>`
       : q ? (avail ? `<span class="chip free">✓ Free for your dates</span>` : `<span class="chip busy">✗ Taken those nights</span>`)
       : occupiedTonight(r.id) ? `<span class="chip busy">Occupied tonight</span>`
       : `<span class="chip free">Free tonight</span>`;
-    const btn = q && avail
+    const btn = q && avail && !S.placeholder
       ? `<button class="btn ${r.dark?'gold':''}" data-act="bookRange" data-arg="${r.id}">🏰 Book ${fmt(q.start)} → ${fmt(q.end)}</button>`
-      : `<button class="btn ${r.dark?'gold':''}" data-act="openBook" data-arg="${r.id}" ${r.closed?'disabled':''}>📅 Check dates &amp; book</button>`;
+      : `<button class="btn ${r.dark?'gold':''}" data-act="openBook" data-arg="${r.id}" ${r.closed||S.placeholder?'disabled':''}>📅 Check dates &amp; book</button>`;
     return `<div class="room ${r.dark?'dungeon':''} ${r.closed?'closed-room':''} ${avail===false?'dim':''}">
       <div class="toprow"><span class="emoji">${r.emoji}</span>${chip}</div>
       <h3>${esc(r.name)}</h3>
@@ -636,7 +647,8 @@ function keeperView(){
         <div class="setting"><h4>Notify the Crown 📯</h4>
           <p>Where you hear of every booking, block &amp; cancellation. Comma-separate multiple addresses; for texts try your carrier&rsquo;s gateway (Verizon: number@vtext.com). ${S.adminNotifySet?'<b>Currently on.</b> Saving replaces the address; save empty to turn off.':'<b>Currently off.</b>'}</p>
           <div class="inline-form"><input id="admin-notify" placeholder="you@gmail.com, 5551234567@vtext.com">
-          <button class="btn sm" data-act="saveAdminNotify">Save</button></div></div>
+          <button class="btn sm" data-act="saveAdminNotify">Save</button>
+          <button class="btn ghost sm" data-act="testNotify">📨 Send test</button></div></div>
         <div class="setting"><h4>Royal ledger (backend URL)</h4>
           <p>${apiUrl()?'Connected — all devices share the same calendar.':'Not connected — running in demo mode on this device. Paste your Apps Script web app URL to go live.'}</p>
           <div class="inline-form"><input id="api-url-in" placeholder="https://script.google.com/…/exec" value="${esc(localStorage.getItem(LS_API)||'')}">
@@ -733,7 +745,7 @@ const ACT = {
       </div>
       <p style="font-size:13px;color:var(--ink2)">Check-in is whenever you show up. Check-out is before the King starts vacuuming pointedly.</p>
       <div class="mrow"><button class="btn" data-act="closeModal">Huzzah!</button></div>`);
-    refresh();
+    refresh(true);
   },
 
   async doBlock(){
@@ -741,7 +753,7 @@ const ACT = {
     const r=await api('block', {pin:sess.pin, roomId:BK.roomId, start:BK.start, end:BK.end, note});
     if(!r.ok){ toast(r.error, true); return; }
     closeModal(); toast('Dates blocked. None shall pass. 🚫');
-    refresh();
+    refresh(true);
   },
 
   openManage(){
@@ -781,7 +793,7 @@ const ACT = {
     if(!r.ok){ toast(r.error, true); return; }
     removeStay(code);
     closeModal(); toast('Reservation cancelled. The chamber sighs with relief.');
-    refresh();
+    refresh(true);
   },
   addIcs(code){
     const st=stayFor(code); if(!st){ toast('Reservation details not found.', true); return; }
@@ -838,13 +850,13 @@ const ACT = {
     const r=await api('unbook',{pin:sess.pin, bookingId:id});
     if(!r.ok){ toast(r.error, true); return; }
     toast('Released. The chamber is free once more.');
-    refresh();
+    refresh(true);
   },
   async toggleClosed(id){
     const r=await api('toggleClosed',{pin:sess.pin, roomId:id});
     if(!r.ok){ toast(r.error, true); return; }
     toast(r.closed?'Chamber closed by order of the Crown. 🔒':'Chamber reopened. 🔓');
-    refresh();
+    refresh(true);
   },
   async saveOwner(id){
     const name=document.getElementById('own-name-'+id).value.trim();
@@ -859,7 +871,7 @@ const ACT = {
     const r=await api('assignOwner',payload);
     if(!r.ok){ toast(r.error, true); return; }
     toast(name?`${name} now keeps ${room(id).name}. 🗝️`:'Keeper removed.');
-    refresh();
+    refresh(true);
   },
   async saveAdminPin(){
     const p=document.getElementById('new-admin-pin').value.trim();
@@ -878,7 +890,18 @@ const ACT = {
       return;
     }
     toast(r.set?'The Crown shall be notified of all castle business. 📯':'Crown notifications turned off.');
-    refresh();
+    refresh(true);
+  },
+  async testNotify(){
+    toast('Dispatching a test raven… 🐦');
+    const r=await api('testNotify',{pin:sess.pin});
+    if(!r.ok){
+      toast(/Unknown decree/.test(r.error||'')
+        ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+        : r.error, true);
+      return;
+    }
+    toast('Test sent to '+r.sent+' — check thy inbox (or phone). 📨');
   },
   saveApiUrl(){
     const u=document.getElementById('api-url-in').value.trim();
@@ -900,9 +923,19 @@ document.addEventListener('click', e=>{
 // PWA: register only over http(s) — double-clicking the file locally still works
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol))
   navigator.serviceWorker.register('sw.js').catch(()=>{});
+// instant first paint: last known ledger from cache, or placeholder cards —
+// the live ledger (5s+ round trip) hydrates in when it answers
+try{
+  const c=JSON.parse(localStorage.getItem(LS_CACHE));
+  if(c && c.rooms && c.rooms.length) adoptState(c);
+}catch(e){}
+if(!S.rooms.length){
+  S={rooms:SEED_ROOMS.map(m=>({...m, closed:false, ownerName:'', ownerNotifySet:false})), bookings:[], adminNotifySet:false, placeholder:true};
+}
+render();
 refresh();
-setInterval(()=>{ if(!veil.classList.contains('open')) refresh(); }, 60000);
-window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(); });
+setInterval(()=>{ if(!veil.classList.contains('open')) refresh(true); }, 60000);
+window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(true); });
 </script>
 </body>
 </html>
