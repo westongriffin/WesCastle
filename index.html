@@ -174,6 +174,7 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
   <div id="main"></div>
   <footer>
     <div class="links">
+      <button data-act="acctLink">👤 My stays</button>
       <button data-act="openManage">📜 Find my reservation</button>
       <button data-act="openKeeper">🗝️ Keeper&rsquo;s Entrance</button>
     </div>
@@ -201,7 +202,7 @@ const SS_SESS  = 'wes-castle-sess';
 const SEED_ROOMS = [
   {id:'jack',    name:'Jack',              emoji:'🪣', tag:'Went up the hill and never left. Twin bed, zero candlesticks.', rate:'2 compliments / night'},
   {id:'jill',    name:'Jill',              emoji:'⛰️', tag:'Came tumbling after. Objectively the better view — don’t tell Jack.', rate:'2 compliments / night'},
-  {id:'media',   name:'The Media Room',    emoji:'🎬', tag:'Fall asleep mid-movie in surround-sound glory. The recliner absolutely counts as a bed.', rate:'1 movie pick / night'},
+  {id:'media',   name:'The Media Room',    emoji:'🎬', tag:'Fall asleep mid-movie in surround-sound glory. The recliner absolutely counts as a bed.', rate:'1 movie pick / night', capacity:4},
   {id:'east',    name:'The East Wing',     emoji:'🌅', tag:'Where the sun rises first and the coffee arrives last. Early risers only.', rate:'3 compliments / night'},
   {id:'west',    name:'The West Wing',     emoji:'🦅', tag:'Dramatic hallway walk-and-talks included at no extra charge.', rate:'3 compliments / night'},
   {id:'dungeon', name:'Dawson’s Dungeon', emoji:'⛓️', tag:'No windows. No rules. No refunds. Our most exclusive suite.', rate:'1 unspecified favor / night', dark:true},
@@ -214,6 +215,10 @@ try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
 const UIS = {view:'guest', calBase:null}; // calBase = Date, first of month shown
 let BK = null;                            // active booking modal {roomId, mode:'book'|'block'|'search', start, end}
 let SQ = {start:null, end:null};          // applied date-first search query
+const LS_ACCT = 'wes-castle-acct';
+let ACCT = null;                          // guest account {token, email}
+try{ ACCT = JSON.parse(localStorage.getItem(LS_ACCT)) }catch(e){}
+let ACCT_STAYS = null;                    // server-side stays for the signed-in guest
 
 function apiUrl(){ return (localStorage.getItem(LS_API) || API_URL || '').trim(); }
 
@@ -253,11 +258,24 @@ const Local = {
   overlap(d,roomId,start,end){
     return d.bookings.some(b=>b.roomId===roomId && start<b.end && end>b.start);
   },
+  bookConflict(d,room,start,end){ // guest bookings share multi-capacity rooms; blocks claim everything
+    const cap=room.capacity||1;
+    const ov=d.bookings.filter(b=>b.roomId===room.id && start<b.end && end>b.start);
+    if(ov.some(b=>b.type==='block')) return true;
+    if(ov.length<cap) return false;
+    let day=start;
+    while(day<end){
+      let n=0; for(const b of ov) if(b.start<=day && day<b.end) n++;
+      if(n>=cap) return true;
+      day=addDays(day,1);
+    }
+    return false;
+  },
   handle(action,p){
     const d=this.db();
     const pub = ()=>({ok:true,
       adminNotifySet:(d.adminNotify||'').includes('@'),
-      rooms:d.rooms.map(r=>({id:r.id,name:r.name,emoji:r.emoji,tag:r.tag,rate:r.rate,dark:!!r.dark,closed:!!r.closed,ownerName:r.ownerName||'',ownerNotifySet:(r.ownerNotify||'').includes('@')})),
+      rooms:d.rooms.map(r=>({id:r.id,name:r.name,emoji:r.emoji,tag:r.tag,rate:r.rate,dark:!!r.dark,closed:!!r.closed,ownerName:r.ownerName||'',ownerNotifySet:(r.ownerNotify||'').includes('@'),capacity:r.capacity||1})),
       bookings:d.bookings.map(b=>({id:b.id,roomId:b.roomId,type:b.type,guestName:b.guestName,start:b.start,end:b.end}))});
     if(action==='state') return pub();
     if(action==='login'){
@@ -271,7 +289,8 @@ const Local = {
       if(!p.guestName||!p.guestName.trim()) return {ok:false,error:'The royal ledger requires a name.'};
       if(!p.start||!p.end||p.start>=p.end) return {ok:false,error:'Pick a valid check-in and check-out.'};
       if(p.start<todayIso()) return {ok:false,error:'The castle does not accept bookings in the past. Yet.'};
-      if(this.overlap(d,p.roomId,p.start,p.end)) return {ok:false,error:'Alas — someone claimed those nights first.'};
+      if(this.bookConflict(d,room,p.start,p.end)) return {ok:false,error:
+        (room.capacity||1)>1 ? 'The chamber is full for part of that range.' : 'Alas — someone claimed those nights first.'};
       const code='WC-'+Math.random().toString(36).slice(2,6).toUpperCase();
       d.bookings.push({id:'b'+Date.now(), roomId:p.roomId, type:'guest', guestName:p.guestName.trim(),
         start:p.start, end:p.end, code, createdBy:'guest', createdAt:todayIso(),
@@ -289,6 +308,60 @@ const Local = {
       const b=d.bookings.find(b=>b.code && b.code.toUpperCase()===String(p.code||'').trim().toUpperCase());
       if(!b) return {ok:false,error:'No reservation bears that code.'};
       return {ok:true, booking:{roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code}};
+    }
+    if(action==='signup'){
+      const em=String(p.email||'').trim().toLowerCase();
+      if(!em.includes('@')) return {ok:false,error:'Enter a real email address.'};
+      if(String(p.password||'').length<6) return {ok:false,error:'Passwords need at least 6 characters.'};
+      d.guests=d.guests||[];
+      if(d.guests.find(g=>g.email===em)) return {ok:false,error:'That email already holds a castle key — sign in, or reset thy password.'};
+      d.guests.push({email:em, pass:String(p.password), name:(p.name||'').trim()});
+      d.sessions=d.sessions||[];
+      const tok='tok'+Math.random().toString(36).slice(2);
+      d.sessions.push({token:tok, email:em, code:'', expires:Date.now()+180*864e5});
+      this.save(d);
+      return {ok:true, token:tok, email:em, name:(p.name||'').trim()};
+    }
+    if(action==='signin'){
+      const em=String(p.email||'').trim().toLowerCase();
+      const g=(d.guests||[]).find(g=>g.email===em && g.pass===String(p.password||''));
+      if(!g) return {ok:false,error:'The gate does not recognize that email & password.'};
+      d.sessions=d.sessions||[];
+      const tok='tok'+Math.random().toString(36).slice(2);
+      d.sessions.push({token:tok, email:em, code:'', expires:Date.now()+180*864e5});
+      this.save(d);
+      return {ok:true, token:tok, email:em, name:g.name||''};
+    }
+    if(action==='resetStart'){
+      const em=String(p.email||'').trim().toLowerCase();
+      if(!(d.guests||[]).find(g=>g.email===em)) return {ok:false,error:'No castle key is held by that email. Create one instead.'};
+      d.sessions=d.sessions||[];
+      const code=String(Math.floor(100000+Math.random()*900000));
+      const row=d.sessions.find(s=>s.email===em && !s.token);
+      if(row){ row.code=code; row.expires=Date.now()+600000; }
+      else d.sessions.push({token:'', email:em, code, expires:Date.now()+600000});
+      this.save(d);
+      return {ok:true, demoCode:code}; // demo mode has no ravens — hand the code over directly
+    }
+    if(action==='resetFinish'){
+      const em=String(p.email||'').trim().toLowerCase();
+      if(String(p.password||'').length<6) return {ok:false,error:'Passwords need at least 6 characters.'};
+      const row=(d.sessions||[]).find(s=>s.email===em && s.code && s.code===String(p.code||'').trim() && s.expires>Date.now());
+      if(!row) return {ok:false,error:'That code is wrong or expired. Request a fresh one.'};
+      const g=(d.guests||[]).find(g=>g.email===em);
+      if(!g) return {ok:false,error:'No castle key is held by that email.'};
+      g.pass=String(p.password); row.code='';
+      const tok='tok'+Math.random().toString(36).slice(2);
+      d.sessions.push({token:tok, email:em, code:'', expires:Date.now()+180*864e5});
+      this.save(d);
+      return {ok:true, token:tok, email:em, name:g.name||''};
+    }
+    if(action==='myStays'){
+      const row=(d.sessions||[]).find(s=>s.token && s.token===p.token);
+      if(!row || row.expires<Date.now()) return {ok:false,error:'Thy castle key expired — sign in again.',expired:true};
+      return {ok:true, email:row.email,
+        stays:d.bookings.filter(b=>b.type==='guest' && (b.guestEmail||'').toLowerCase()===row.email)
+          .map(b=>({roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code}))};
     }
     // ----- authorized ops below -----
     const a=this.auth(d,p.pin);
@@ -316,6 +389,7 @@ const Local = {
       if(!p.keepPin) r.ownerPin=(p.ownerPin||'').trim();
       if(p.ownerNotify!==undefined && !p.keepNotify) r.ownerNotify=(p.ownerNotify||'').trim();
       if(!r.ownerName){ r.ownerPin=''; r.ownerNotify=''; }
+      if(p.capacity!==undefined) r.capacity=Math.max(1, Math.min(20, parseInt(p.capacity,10)||1));
       this.save(d); return {ok:true};
     }
     if(action==='setAdminNotify'){
@@ -376,10 +450,20 @@ async function refresh(silent){
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function room(id){ return S.rooms.find(r=>r.id===id); }
 function occupiedSet(roomId){
-  const set=new Set();
+  // capacity-aware: a night counts as taken only when the chamber is FULL
+  // (guest stays >= capacity) or a block claims it outright
+  const cap=(room(roomId)||{}).capacity||1;
+  const m={};
   for(const b of S.bookings) if(b.roomId===roomId){
-    let d=b.start; while(d<b.end){ set.add(d); d=addDays(d,1); }
+    let d=b.start;
+    while(d<b.end){
+      const e=m[d]||(m[d]={g:0,blk:false});
+      if(b.type==='block') e.blk=true; else e.g++;
+      d=addDays(d,1);
+    }
   }
+  const set=new Set();
+  for(const d in m) if(m[d].blk || m[d].g>=cap) set.add(d);
   return set;
 }
 function occupiedTonight(roomId){ return occupiedSet(roomId).has(todayIso()); }
@@ -391,17 +475,36 @@ function myStays(){ try{ return JSON.parse(localStorage.getItem(LS_STAYS))||[] }
 function saveStays(a){ localStorage.setItem(LS_STAYS, JSON.stringify(a)); }
 function addStay(st){ saveStays(myStays().filter(s=>s.code!==st.code).concat(st)); }
 function removeStay(code){ saveStays(myStays().filter(s=>s.code!==code)); }
-function currentStays(){
-  let a=myStays().filter(s=>s.end>todayIso());
-  if(S.rooms.length){ // state loaded — drop stays cancelled/released elsewhere
+function deviceStays(){
+  let a=myStays();
+  if(S.rooms.length && !S.placeholder){
+    // drop stays cancelled/released elsewhere (past bookings stay in the ledger, so history survives)
     a=a.filter(s=>S.bookings.some(b=>b.roomId===s.roomId&&b.start===s.start&&b.end===s.end));
     saveStays(a);
   }
-  return a.sort((x,y)=>x.start<y.start?-1:1);
+  return a;
+}
+function allMyStays(){
+  const acct=(ACCT && ACCT_STAYS)?ACCT_STAYS:[];
+  const dev=deviceStays().filter(s=>!acct.some(x=>x.code===s.code));
+  const t=todayIso(), all=acct.concat(dev);
+  return {
+    upcoming: all.filter(s=>s.end>t).sort((x,y)=>x.start<y.start?-1:1),
+    past: all.filter(s=>s.end<=t).sort((x,y)=>x.start<y.start?1:-1).slice(0,5)
+  };
 }
 function stayFor(code){
   if(MG && MG.code===code) return MG;
-  return myStays().find(s=>s.code===code);
+  return (ACCT_STAYS||[]).find(s=>s.code===code) || myStays().find(s=>s.code===code);
+}
+async function loadAcctStays(){
+  if(!ACCT) return;
+  const r=await api('myStays',{token:ACCT.token});
+  if(r.ok){ ACCT_STAYS=r.stays; render(); }
+  else if(r.expired){
+    ACCT=null; ACCT_STAYS=null; localStorage.removeItem(LS_ACCT);
+    render(); toast('Thy castle key expired — sign in again.', true);
+  } // old backends without myStays: fail silently, device memory still works
 }
 function icsEsc(s){ return String(s).replace(/\\/g,'\\\\').replace(/[,;]/g,m=>'\\'+m).replace(/\n/g,'\\n'); }
 function buildIcs(st){
@@ -415,6 +518,49 @@ function buildIcs(st){
     'DESCRIPTION:'+icsEsc('Guest: '+st.guestName+'\nConfirmation code: '+st.code+'\nCheck-out before the King starts vacuuming pointedly.'),
     'END:VEVENT','END:VCALENDAR'].join('\r\n');
 }
+function authModalHTML(mode, email){
+  const em=esc(email||'');
+  if(mode==='signup') return `<button class="x" data-act="closeModal">✕</button>
+    <h2>🗝️ Forge thy castle key</h2>
+    <div class="sub">One key, every device — all thy stays, past and future, in one place.</div>
+    <div class="field"><label>Your name</label><input id="au-name" placeholder="e.g. Sir Reginald of the Couch" value="${esc((ACCT&&ACCT.name)||'')}"></div>
+    <div class="field"><label>Email</label><input id="au-email" type="email" value="${em}" placeholder="you@example.com"></div>
+    <div class="field"><label>Password (6+ characters)</label><input id="au-pass" type="password"></div>
+    <div class="mrow">
+      <button class="btn ghost" data-act="authMode" data-arg="signin">I already hold a key</button>
+      <button class="btn gold" data-act="doSignUp">🗝️ Forge my key</button>
+    </div>`;
+  if(mode==='reset') return `<button class="x" data-act="closeModal">✕</button>
+    <h2>🕯️ Reset thy password</h2>
+    <div class="sub">A raven brings a code to thy email — speak it below with a new password.</div>
+    <div class="field"><label>Email</label><input id="au-email" type="email" value="${em}"></div>
+    <div class="mrow" style="justify-content:flex-start;margin-top:4px">
+      <button class="btn ghost sm" data-act="doResetStart">🐦 Send reset code</button></div>
+    <div class="field"><label>Code from the raven</label><input id="au-code" placeholder="6 digits" inputmode="numeric"></div>
+    <div class="field"><label>New password (6+ characters)</label><input id="au-pass" type="password"></div>
+    <div class="mrow">
+      <button class="btn ghost" data-act="authMode" data-arg="signin">Back</button>
+      <button class="btn" data-act="doResetFinish">Set new password</button>
+    </div>`;
+  return `<button class="x" data-act="closeModal">✕</button>
+    <h2>🗝️ Thy castle key</h2>
+    <div class="sub">Sign in to see all thy stays — past and future — on any device.</div>
+    <div class="field"><label>Email</label><input id="au-email" type="email" value="${em}" placeholder="you@example.com"></div>
+    <div class="field"><label>Password</label><input id="au-pass" type="password"></div>
+    <div class="mrow">
+      <button class="btn ghost" data-act="authMode" data-arg="signup">Create a key</button>
+      <button class="btn ghost" data-act="authMode" data-arg="reset">Forgot password</button>
+      <button class="btn" data-act="doSignIn">Enter the gate</button>
+    </div>`;
+}
+function acctIn(r, msg){
+  ACCT={token:r.token, email:r.email, name:r.name||''};
+  localStorage.setItem(LS_ACCT, JSON.stringify(ACCT));
+  ACCT_STAYS=null;
+  closeModal(); render(); toast(msg);
+  loadAcctStays();
+}
+
 function manageHTML(){
   const r=room(MG.roomId)||{name:MG.roomId,emoji:'🏰'};
   const n=nightsBetween(MG.start,MG.end);
@@ -458,10 +604,8 @@ document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
 
 /* ---------------- guest view ---------------- */
 function guestView(){
-  const stays=currentStays();
-  const stayCard = !stays.length ? '' : `<div class="kcard" style="margin-top:26px">
-    <h3>🧳 Your upcoming stays</h3>
-    <div class="bk-list">${stays.map(s=>{const r=room(s.roomId)||{};return `
+  const {upcoming, past}=allMyStays();
+  const stayRow = s=>{const r=room(s.roomId)||{};return `
       <div class="bk-row">
         <span style="font-size:20px">${r.emoji||'🏰'}</span>
         <span class="name">${esc(r.name||s.roomId)} <span style="color:var(--ink2);font-weight:400;font-size:12.5px">· ${esc(s.guestName)} · code ${esc(s.code)}</span></span>
@@ -469,13 +613,34 @@ function guestView(){
         <button class="btn ghost sm" data-act="addIcs" data-arg="${esc(s.code)}">📅 iCal</button>
         <button class="btn ghost sm" data-act="addGcal" data-arg="${esc(s.code)}">📆 Google</button>
         <button class="btn danger sm" data-act="manageByCode" data-arg="${esc(s.code)}">Manage</button>
-      </div>`}).join('')}</div>
-    <div style="font-size:12px;color:var(--ink2);margin-top:8px">Remembered on this device. From another device, use “Find my reservation” below with your code.</div>
+      </div>`};
+  const pastRow = s=>{const r=room(s.roomId)||{};return `
+      <div class="bk-row" style="opacity:.78">
+        <span style="font-size:20px">${r.emoji||'🏰'}</span>
+        <span class="name">${esc(r.name||s.roomId)} <span style="color:var(--ink2);font-weight:400;font-size:12.5px">· ${esc(s.guestName)}</span></span>
+        <span class="dates">${fmt(s.start)} → ${fmt(s.end)}</span>
+        <button class="btn sm" data-act="bookAgain" data-arg="${esc(s.code)}">🔁 Book again</button>
+      </div>`};
+  const showCard = ACCT || upcoming.length || past.length;
+  const stayCard = !showCard ? '' : `<div class="kcard" style="margin-top:26px">
+    <h3>🧳 Your stays<span class="spacer"></span>
+      ${ACCT
+        ? `<span style="font-size:13px;color:var(--ink2);font-weight:400">✉️ ${esc(ACCT.email)}</span>
+           <button class="btn ghost sm" data-act="signOut">Sign out</button>`
+        : `<button class="btn sm" data-act="openSignIn">🗝️ Sign in / create key</button>`}
+    </h3>
+    <div class="bk-list">${upcoming.length ? upcoming.map(stayRow).join('')
+      : (ACCT ? `<div class="empty">No upcoming stays — the chambers await.</div>` : '')}</div>
+    ${past.length?`<div style="font-size:12px;font-weight:800;letter-spacing:.5px;color:var(--ink2);text-transform:uppercase;margin-top:12px">Past sojourns</div>
+      <div class="bk-list" style="margin-top:6px">${past.map(pastRow).join('')}</div>`:''}
+    ${ACCT
+      ? (ACCT_STAYS===null?`<div style="font-size:12px;color:var(--ink2);margin-top:8px">Consulting the ledger for thy stays…</div>`:'')
+      : `<div style="font-size:12px;color:var(--ink2);margin-top:8px">Remembered on this device only. Sign in with thy castle key to see every stay — past and future — on any device.</div>`}
   </div>`;
   const q = (SQ.start && SQ.end) ? SQ : null;
   const freeCount = q ? S.rooms.filter(r=>!r.closed && rangeFree(r.id,q.start,q.end)).length : 0;
   const nQ = q ? nightsBetween(q.start,q.end) : 0;
-  const searchCard = `<div class="kcard" style="margin-top:${stays.length?'18':'26'}px">
+  const searchCard = `<div class="kcard" style="margin-top:${showCard?'18':'26'}px">
     <h3>🔭 When art thou staying?<span class="spacer"></span>
       ${q ? `<button class="btn sm" data-act="openSearch">${fmt(q.start)} → ${fmt(q.end)} · change</button>
              <button class="btn ghost sm" data-act="clearSearch">✕ Clear</button>`
@@ -500,6 +665,7 @@ function guestView(){
       <h3>${esc(r.name)}</h3>
       <div class="tag">${esc(r.tag)}</div>
       <div class="rate">Rate: ${esc(r.rate)}</div>
+      ${(r.capacity||1)>1?`<div class="keeper">👥 Hosts up to <b>${r.capacity}</b> parties a night</div>`:''}
       ${r.ownerName?`<div class="keeper">Chamber keeper: <b>${esc(r.ownerName)}</b></div>`:''}
       <div style="margin-top:10px">${btn}</div>
     </div>`;
@@ -564,7 +730,7 @@ function bookModalHTML(){
       ? 'Blocking dates — guests will not be able to book these nights.'
       : forGuest
       ? 'Booking on behalf of a guest — pass them the confirmation code when it appears.'
-      : 'Pick a check-in day, then a check-out day.'}${r.dark&&!isBlock?' The management is not responsible for anything you hear after midnight.':''}</div>
+      : 'Pick a check-in day, then a check-out day.'}${!isBlock&&!isSearch&&(r.capacity||1)>1?` This chamber hosts up to ${r.capacity} parties a night — dates only show as taken when it&rsquo;s full.`:''}${r.dark&&!isBlock?' The management is not responsible for anything you hear after midnight.':''}</div>
     <div class="cal-nav">
       <button data-act="calPrev" ${atStart?'disabled':''}>‹</button>
       <button data-act="calNext">›</button>
@@ -636,14 +802,15 @@ function keeperView(){
 
   if(sess.role==='admin'){
     html += `<div class="kcard"><h3>👥 Chamber keepers</h3>
-      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Assign a keeper to a chamber: give them a name and a PIN. Their PIN unlocks full booking &amp; release rights for that chamber only. Clear the name to remove them. <b>Notify</b> is where they hear of bookings &amp; cancellations — an email, or a carrier text address like <i>5551234567@vtext.com</i>. Addresses stay hidden once saved: blank keeps the current one, type “-” to remove it.</p>
+      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Assign a keeper to a chamber: give them a name and a PIN. Their PIN unlocks full booking &amp; release rights for that chamber only. Clear the name to remove them. <b>Notify</b> is where they hear of bookings &amp; cancellations — an email, or a carrier text address like <i>5551234567@vtext.com</i>. Addresses stay hidden once saved: blank keeps the current one, type “-” to remove it. <b>Spots</b> = how many bookings the chamber hosts per night (set the Media Room to 4 to let guests share it).</p>
       <div style="overflow-x:auto"><table class="owners">
-        <tr><th>Chamber</th><th>Keeper</th><th>PIN</th><th>Notify</th><th></th></tr>
+        <tr><th>Chamber</th><th>Keeper</th><th>PIN</th><th>Notify</th><th>Spots</th><th></th></tr>
         ${S.rooms.map(r=>`<tr>
           <td>${r.emoji} ${esc(r.name)}</td>
           <td><input id="own-name-${r.id}" value="${esc(r.ownerName||'')}" placeholder="—"></td>
           <td><input id="own-pin-${r.id}" placeholder="set new PIN"></td>
           <td><input id="own-notify-${r.id}" placeholder="${r.ownerNotifySet?'✓ set — type to replace':'email or 555…@vtext.com'}"></td>
+          <td><input id="own-cap-${r.id}" type="number" min="1" max="20" value="${r.capacity||1}" style="max-width:64px"></td>
           <td><button class="btn sm" data-act="saveOwner" data-arg="${r.id}">Save</button></td>
         </tr>`).join('')}
       </table></div></div>`;
@@ -682,7 +849,8 @@ const ACT = {
   openBook(id){
     const now=new Date();
     UIS.calBase=new Date(now.getFullYear(), now.getMonth(), 1);
-    BK={roomId:id, mode:'book', start:null, end:null, name:''};
+    const me = (UIS.view!=='keeper' && ACCT) ? ACCT : null;
+    BK={roomId:id, mode:'book', start:null, end:null, name:me?me.name:'', email:me?me.email:''};
     openModal(bookModalHTML());
   },
   openBlock(id){
@@ -707,7 +875,8 @@ const ACT = {
     if(!SQ.start||!SQ.end) return ACT.openBook(id);
     const d=fromIso(SQ.start);
     UIS.calBase=new Date(d.getFullYear(), d.getMonth(), 1);
-    BK={roomId:id, mode:'book', start:SQ.start, end:SQ.end, name:''};
+    const me = (UIS.view!=='keeper' && ACCT) ? ACCT : null;
+    BK={roomId:id, mode:'book', start:SQ.start, end:SQ.end, name:me?me.name:'', email:me?me.email:''};
     openModal(bookModalHTML());
   },
   calPrev(){ UIS.calBase=new Date(UIS.calBase.getFullYear(), UIS.calBase.getMonth()-1, 1); redrawBookModal(); },
@@ -744,10 +913,13 @@ const ACT = {
     if(!r.ok){ done(); toast(r.error, true); return; }
     const rm=room(BK.roomId), n=nightsBetween(BK.start,BK.end);
     const s=BK.start, e=BK.end; closeModal();
-    addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e});
+    addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e, email});
     // show it on the calendar instantly; the background refresh reconciles ids
     S.bookings.push({id:'tmp'+Date.now(), roomId:rm.id, type:'guest', guestName:name, start:s, end:e});
+    if(ACCT && ACCT_STAYS && email.toLowerCase()===ACCT.email)
+      ACCT_STAYS.push({roomId:rm.id, guestName:name, start:s, end:e, code:r.code});
     render();
+    if(ACCT) loadAcctStays();
     openModal(`<button class="x" data-act="closeModal">✕</button>
       <h2>🎉 The chamber is thine!</h2>
       <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
@@ -804,6 +976,75 @@ const ACT = {
     openModal(manageHTML());
   },
   manageByCode(code){ ACT.doFind(code); },
+
+  /* ----- guest accounts ----- */
+  openSignIn(){ openModal(authModalHTML('signin', ACCT?ACCT.email:'')); document.getElementById('au-email').focus(); },
+  authMode(mode){
+    const em=document.getElementById('au-email')?.value||'';
+    openModal(authModalHTML(mode, em));
+  },
+  async doSignIn(){
+    const email=document.getElementById('au-email').value.trim();
+    const password=document.getElementById('au-pass').value;
+    if(!email||!password){ toast('Email and password, if it please thee.', true); return; }
+    const done=pending('⏳ Unlocking…');
+    const r=await api('signin',{email,password});
+    if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    acctIn(r, 'The gate opens — welcome back! 🗝️');
+  },
+  async doSignUp(){
+    const name=document.getElementById('au-name').value.trim();
+    const email=document.getElementById('au-email').value.trim();
+    const password=document.getElementById('au-pass').value;
+    if(!email.includes('@')){ toast('Enter a real email address.', true); return; }
+    if(password.length<6){ toast('Passwords need at least 6 characters.', true); return; }
+    const done=pending('⏳ Forging…');
+    const r=await api('signup',{name, email, password});
+    if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    acctIn(r, 'Thy castle key is forged! 🗝️');
+  },
+  async doResetStart(){
+    const email=document.getElementById('au-email').value.trim();
+    if(!email.includes('@')){ toast('Enter thy email first.', true); return; }
+    const done=pending('🐦 Flying…');
+    const r=await api('resetStart',{email});
+    done();
+    if(!r.ok){ toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    toast(r.demoCode ? 'Demo raven whispers: thy code is '+r.demoCode : 'Code sent — check thy email. 🐦');
+    document.getElementById('au-code')?.focus();
+  },
+  async doResetFinish(){
+    const email=document.getElementById('au-email').value.trim();
+    const code=document.getElementById('au-code').value.trim();
+    const password=document.getElementById('au-pass').value;
+    if(!code||password.length<6){ toast('The code and a new password (6+ characters), please.', true); return; }
+    const done=pending('⏳…');
+    const r=await api('resetFinish',{email, code, password});
+    if(!r.ok){ done(); toast(r.error, true); return; }
+    acctIn(r, 'New password set — the gate opens. 🗝️');
+  },
+  signOut(){
+    ACCT=null; ACCT_STAYS=null; localStorage.removeItem(LS_ACCT);
+    render(); toast('Signed out. Thy stays remain safe in the ledger.');
+  },
+  acctLink(){
+    if(ACCT || allMyStays().upcoming.length || allMyStays().past.length){
+      UIS.view='guest'; render(); window.scrollTo({top:0, behavior:'smooth'});
+    }
+    else ACT.openSignIn();
+  },
+  bookAgain(code){
+    const st=(ACCT_STAYS||[]).concat(myStays()).find(s=>s.code===code);
+    if(!st) return;
+    ACT.openBook(st.roomId);
+    if(BK){ BK.name=st.guestName||''; BK.email=(ACCT&&ACCT.email)||st.email||''; redrawBookModal(); }
+  },
   async doCancel(code){
     code = code || (MG&&MG.code);
     if(!code) return;
@@ -813,6 +1054,7 @@ const ACT = {
     const r=await api('cancelByCode',{code});
     if(!r.ok){ done(); toast(r.error, true); return; }
     removeStay(code);
+    if(ACCT_STAYS) ACCT_STAYS=ACCT_STAYS.filter(s=>s.code!==code);
     if(st) S.bookings=S.bookings.filter(b=>!(b.roomId===st.roomId&&b.start===st.start&&b.end===st.end));
     closeModal(); render(); toast('Reservation cancelled. The chamber sighs with relief.');
     refresh(true);
@@ -895,7 +1137,8 @@ const ACT = {
     if(name && pin && pin.length<4){ toast('Keeper PINs need at least 4 characters.', true); return; }
     // blank pin/notify fields keep the existing values; "-" clears notify
     const nt=(document.getElementById('own-notify-'+id)?.value||'').trim();
-    const payload={pin:sess.pin, roomId:id, ownerName:name, ownerPin:pin, ownerNotify:nt==='-'?'':nt};
+    const cap=Math.max(1, Math.min(20, parseInt(document.getElementById('own-cap-'+id)?.value,10)||1));
+    const payload={pin:sess.pin, roomId:id, ownerName:name, ownerPin:pin, ownerNotify:nt==='-'?'':nt, capacity:cap};
     if(name && !pin) payload.keepPin=true;
     if(!nt) payload.keepNotify=true;
     const done=pending('⏳…');
@@ -903,11 +1146,12 @@ const ACT = {
     if(!r.ok){ done(); toast(r.error, true); return; }
     const rm=room(id);
     rm.ownerName=name;
+    rm.capacity=cap;
     if(!name) rm.ownerNotifySet=false;
     else if(nt && nt!=='-') rm.ownerNotifySet=nt.includes('@');
     else if(nt==='-') rm.ownerNotifySet=false;
     render();
-    toast(name?`${name} now keeps ${rm.name}. 🗝️`:'Keeper removed.');
+    toast(name?`${name} now keeps ${rm.name}. 🗝️`:'Chamber updated.');
     refresh(true);
   },
   async saveAdminPin(){
@@ -978,6 +1222,7 @@ if(!S.rooms.length){
 }
 render();
 refresh();
+loadAcctStays();
 setInterval(()=>{ if(!veil.classList.contains('open')) refresh(true); }, 60000);
 window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(true); });
 </script>
