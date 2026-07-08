@@ -1,0 +1,39 @@
+name: Deploy WesCastleSync to Apps Script
+on:
+  push:
+    paths:
+      - 'WesCastleSync.gs'
+      - '.github/workflows/deploy-appsscript.yml'
+  workflow_dispatch:
+concurrency:
+  group: clasp-deploy
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install clasp
+        run: npm install -g @google/clasp@3.3.0
+      - name: Write clasp credentials
+        run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+      - name: Deploy WesCastleSync.gs
+        env:
+          SCRIPT_ID: '1PNeHFffcPYmkH0KcE0fKanVvWattES3PKM3CfaVJUEjXPzonMyFe20Zl'
+        run: |
+          set -e
+          mkdir -p appsscript
+          printf '{"scriptId":"%s","rootDir":"./appsscript"}\n' "$SCRIPT_ID" > .clasp.json
+          clasp pull
+          echo "--- pulled files ---"; ls -la appsscript
+          CODE_FILE=$(find appsscript -maxdepth 1 -type f \( -name '*.js' -o -name '*.gs' \) ! -name 'appsscript.json' | head -1)
+          if [ -z "$CODE_FILE" ]; then CODE_FILE="appsscript/Code.js"; fi
+          echo "Writing source into: $CODE_FILE"
+          cp WesCastleSync.gs "$CODE_FILE"
+          clasp push -f
+          echo "PUSH_DONE"

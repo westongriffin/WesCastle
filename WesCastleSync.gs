@@ -1,0 +1,576 @@
+/**
+ * Wes's Castle — royal ledger (backend)
+ * Google Apps Script web app storing rooms & reservations in a Google Sheet.
+ *
+ * DEPLOY:
+ *  1. script.google.com → New project → paste this file.
+ *  2. Deploy → New deployment → Web app.
+ *     - Execute as: Me
+ *     - Who has access: Anyone
+ *  3. Copy the /exec URL and paste it into index.html (API_URL const),
+ *     or into Keeper's Entrance → Royal ledger field.
+ *
+ * The spreadsheet ("Wes's Castle Ledger") is created automatically in your
+ * Drive on the first request. Default admin PIN: 1234 — change it in the app
+ * (Keeper's Entrance → Royal decrees) right away.
+ */
+
+var DEFAULT_ADMIN_PIN = '1234';
+
+var SEED_ROOMS = [
+  ['jack',    'Jack',              '🪣', 'Went up the hill and never left. Twin bed, zero candlesticks.', '2 compliments / night', '', 1],
+  ['jill',    'Jill',              '⛰️', 'Came tumbling after. Objectively the better view — don’t tell Jack.', '2 compliments / night', '', 1],
+  ['media',   'The Media Room',    '🎬', 'Fall asleep mid-movie in surround-sound glory. The recliner absolutely counts as a bed.', '1 movie pick / night', '', 4],
+  ['east',    'The East Wing',     '🌅', 'Where the sun rises first and the coffee arrives last. Early risers only.', '3 compliments / night', '', 1],
+  ['west',    'The West Wing',     '🦅', 'Dramatic hallway walk-and-talks included at no extra charge.', '3 compliments / night', '', 1],
+  ['dungeon', "Dawson’s Dungeon",  '⛓️', 'No windows. No rules. No refunds. Our most exclusive suite.', '1 unspecified favor / night', 'dark', 1],
+];
+
+var ROOM_HEAD    = ['id','name','emoji','tag','rate','flags','closed','ownerName','ownerPin','ownerNotify','capacity'];
+var BOOKING_HEAD = ['id','roomId','type','guestName','start','end','code','createdBy','createdAt','guestEmail'];
+
+/**
+ * RUN ME ONCE after pasting a new version: pick "authorizeCastle" in the
+ * editor toolbar dropdown and press ▶ Run. Google will show a permission
+ * dialog — approve it. This grants the script every permission it needs
+ * (including sending email, which notifications require).
+ */
+function authorizeCastle() {
+  var quota = MailApp.getRemainingDailyQuota(); // touches the mail permission
+  var ss = ss_();                               // touches Drive/Sheets
+  Logger.log('✅ Authorized. Ledger: "' + ss.getName() + '". Email quota left today: ' + quota);
+}
+
+/**
+ * ONE-TIME REPAIR: if the Rooms sheet was seeded with garbled emoji/text
+ * (bad clipboard encoding), pick this function in the editor toolbar
+ * dropdown and click ▶ Run once. Rewrites name/emoji/tag/rate from
+ * SEED_ROOMS; leaves closed/owner columns untouched.
+ */
+function repairSeeds() {
+  var ss = ss_();
+  var sh = ss.getSheetByName('Rooms');
+  var rows = readAll_(sh);
+  var capCol = ROOM_HEAD.indexOf('capacity') + 1;
+  SEED_ROOMS.forEach(function (seed) {
+    var r = rows.filter(function (x) { return x.id === seed[0]; })[0];
+    if (!r) return;
+    sh.getRange(r._row, 2, 1, 4).setValues([[seed[1], seed[2], seed[3], seed[4]]]);
+    if (!Number(r.capacity)) sh.getRange(r._row, capCol).setValue(seed[6] || 1);
+  });
+  Logger.log('Rooms sheet repaired.');
+}
+
+/* ---------------- entry points ---------------- */
+
+function doGet() {
+  return json_(handle_({action: 'state'}));
+}
+
+function doPost(e) {
+  var req;
+  try { req = JSON.parse(e.postData.contents); }
+  catch (err) { return json_({ok: false, error: 'Bad request.'}); }
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try { return json_(handle_(req)); }
+  catch (err) { return json_({ok: false, error: 'Ledger error: ' + err.message}); }
+  finally { lock.releaseLock(); }
+}
+
+/* ---------------- storage ---------------- */
+
+function ss_() {
+  var props = PropertiesService.getScriptProperties();
+  var id = props.getProperty('SPREADSHEET_ID');
+  var ss;
+  if (id) {
+    try { ss = SpreadsheetApp.openById(id); } catch (e) { id = null; }
+  }
+  if (!id) {
+    ss = SpreadsheetApp.create("Wes's Castle Ledger");
+    props.setProperty('SPREADSHEET_ID', ss.getId());
+  }
+  ensureSheet_(ss, 'Rooms', ROOM_HEAD, SEED_ROOMS.map(function (r) {
+    return [r[0], r[1], r[2], r[3], r[4], r[5], 'FALSE', '', '', '', r[6] || 1];
+  }));
+  ensureSheet_(ss, 'Bookings', BOOKING_HEAD, []);
+  ensureSheet_(ss, 'Settings', ['key', 'value'], [['adminPin', DEFAULT_ADMIN_PIN]]);
+  ensureSheet_(ss, 'Log', ['when', 'to', 'subject', 'result'], []);
+  ensureSheet_(ss, 'Sessions', ['token', 'email', 'code', 'expires', 'created'], []);
+  ensureSheet_(ss, 'Guests', ['email', 'passHash', 'salt', 'name', 'created'], []);
+  ensureCols_(ss.getSheetByName('Rooms'), ROOM_HEAD);      // upgrades older ledgers in place
+  ensureCols_(ss.getSheetByName('Bookings'), BOOKING_HEAD);
+  return ss;
+}
+
+function ensureCols_(sh, head) {
+  var row1 = sh.getRange(1, 1, 1, Math.max(sh.getLastColumn(), 1)).getValues()[0];
+  head.forEach(function (h) {
+    if (row1.indexOf(h) < 0) { sh.getRange(1, row1.length + 1).setValue(h); row1.push(h); }
+  });
+}
+
+function ensureSheet_(ss, name, head, seedRows) {
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.appendRow(head);
+    seedRows.forEach(function (r) { sh.appendRow(r); });
+  }
+  return sh;
+}
+
+function readAll_(sh) {
+  var vals = sh.getDataRange().getValues();
+  var head = vals.shift();
+  return vals.map(function (row, i) {
+    var o = {_row: i + 2};
+    head.forEach(function (h, j) { o[h] = row[j]; });
+    return o;
+  });
+}
+
+function dateStr_(v) {
+  // Sheets may hand dates back as Date objects; normalize to YYYY-MM-DD
+  if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  return String(v || '');
+}
+
+function db_() {
+  var ss = ss_();
+  var rooms = readAll_(ss.getSheetByName('Rooms')).map(function (r) {
+    r.closed = String(r.closed).toUpperCase() === 'TRUE';
+    r.ownerPin = String(r.ownerPin || '');
+    r.ownerName = String(r.ownerName || '');
+    return r;
+  });
+  var bookings = readAll_(ss.getSheetByName('Bookings')).map(function (b) {
+    b.start = dateStr_(b.start); b.end = dateStr_(b.end);
+    b.id = String(b.id); b.code = String(b.code || '');
+    return b;
+  });
+  var settings = {};
+  readAll_(ss.getSheetByName('Settings')).forEach(function (s) { settings[s.key] = String(s.value); });
+  return {ss: ss, rooms: rooms, bookings: bookings, settings: settings};
+}
+
+/* ---------------- helpers ---------------- */
+
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function today_() {
+  return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
+}
+
+function fmtD_(s) { // '2026-07-17' → 'Jul 17' (no Date parsing — avoids TZ shifts)
+  var M = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  var p = String(s).split('-');
+  return M[(+p[1]) - 1] + ' ' + (+p[2]);
+}
+
+function nights_(a, b) { return Math.round((new Date(b) - new Date(a)) / 86400000); }
+
+function splitAddrs_(s) {
+  return String(s || '').split(/[,;\s]+/).filter(function (x) { return x.indexOf('@') > 0; });
+}
+
+function hashPass_(salt, pass) {
+  var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + String(pass), Utilities.Charset.UTF_8);
+  return bytes.map(function (b) { var v = (b + 256) % 256; return (v < 16 ? '0' : '') + v.toString(16); }).join('');
+}
+
+function makeToken_(d, email) { // signed-in device stays valid 180 days
+  var tok = Utilities.getUuid();
+  d.ss.getSheetByName('Sessions').appendRow([tok, email, '', new Date().getTime() + 180 * 24 * 3600 * 1000, new Date().getTime()]);
+  return tok;
+}
+
+/** Pretty room name straight from SEED_ROOMS (immune to a garbled sheet). */
+function roomName_(room) {
+  if (!room) return 'a chamber';
+  var s = SEED_ROOMS.filter(function (x) { return x[0] === room.id; })[0];
+  return (s && s[1]) || room.name || room.id;
+}
+
+function logNotify_(d, to, subject, result) {
+  try { d.ss.getSheetByName('Log').appendRow([new Date(), to, subject, result]); } catch (e) {}
+}
+
+/** Alert the Crown + the room's keeper. Addresses may be email or carrier
+ *  SMS-gateway addresses (e.g. 5551234567@vtext.com) — kept short for texts.
+ *  Every attempt is receipted in the Log sheet. */
+function notify_(d, room, subject, body, room2) {
+  var admin = splitAddrs_(d.settings.adminNotify);
+  var owner = (room ? splitAddrs_(room.ownerNotify) : [])
+    .concat(room2 ? splitAddrs_(room2.ownerNotify) : []);
+  var addrs = admin.concat(owner);
+  if (!addrs.length) { logNotify_(d, '(no one)', subject, 'skipped — no admin/keeper notify addresses set'); return; }
+  if (room && !owner.length) logNotify_(d, '(no keeper)', subject, 'room has no keeper notify address — admin only');
+  var seen = {};
+  addrs.forEach(function (a) {
+    if (seen[a]) return; seen[a] = 1;
+    try { MailApp.sendEmail(a, subject, body); logNotify_(d, a, subject, 'sent'); }
+    catch (e) { logNotify_(d, a, subject, 'ERROR: ' + e.message); }
+  });
+}
+
+function mailGuest_(d, addr, subject, body) {
+  var a = splitAddrs_(addr)[0];
+  if (!a) return;
+  try { MailApp.sendEmail(a, subject, body); logNotify_(d, a, subject, 'sent (guest)'); }
+  catch (e) { logNotify_(d, a, subject, 'ERROR (guest): ' + e.message); }
+}
+
+function auth_(d, pin) {
+  pin = String(pin || '');
+  if (!pin) return null;
+  if (pin === d.settings.adminPin) {
+    return {role: 'admin', name: 'The Crown', rooms: d.rooms.map(function (r) { return r.id; })};
+  }
+  var mine = d.rooms.filter(function (r) { return r.ownerPin && r.ownerPin === pin; });
+  if (mine.length) {
+    return {role: 'owner', name: mine[0].ownerName || 'Keeper', rooms: mine.map(function (r) { return r.id; })};
+  }
+  return null;
+}
+
+function overlap_(d, roomId, start, end, excludeId) {
+  return d.bookings.some(function (b) {
+    return b.roomId === roomId && b.id !== excludeId && start < b.end && end > b.start;
+  });
+}
+
+function addDays_(s, n) {
+  var p = s.split('-').map(Number);
+  var dt = new Date(p[0], p[1] - 1, p[2] + n);
+  return dt.getFullYear() + '-' + ('0' + (dt.getMonth() + 1)).slice(-2) + '-' + ('0' + dt.getDate()).slice(-2);
+}
+
+/** Capacity-aware conflict for GUEST bookings: a room with capacity N hosts up
+ *  to N overlapping stays per night; blocks always claim the whole room. */
+function bookingConflict_(d, room, start, end, excludeId) {
+  var cap = Number(room.capacity) || 1;
+  var overl = d.bookings.filter(function (b) {
+    return b.roomId === room.id && b.id !== excludeId && start < b.end && end > b.start;
+  });
+  if (overl.some(function (b) { return b.type === 'block'; })) return true;
+  if (overl.length < cap) return false;
+  var day = start;
+  while (day < end) {
+    var n = 0;
+    for (var i = 0; i < overl.length; i++) if (overl[i].start <= day && day < overl[i].end) n++;
+    if (n >= cap) return true;
+    day = addDays_(day, 1);
+  }
+  return false;
+}
+
+function publicState_(d) {
+  return {
+    ok: true,
+    adminNotifySet: splitAddrs_(d.settings.adminNotify).length > 0,
+    rooms: d.rooms.map(function (r) {
+      return {id: r.id, name: r.name, emoji: r.emoji, tag: r.tag, rate: r.rate,
+              dark: String(r.flags).indexOf('dark') >= 0, closed: r.closed, ownerName: r.ownerName,
+              ownerNotifySet: splitAddrs_(r.ownerNotify).length > 0, capacity: Number(r.capacity) || 1};
+    }),
+    bookings: d.bookings.map(function (b) {
+      return {id: b.id, roomId: b.roomId, type: b.type, guestName: b.guestName, start: b.start, end: b.end};
+    })
+  };
+}
+
+function setRoom_(d, roomId, field, value) {
+  var r = d.rooms.filter(function (x) { return x.id === roomId; })[0];
+  if (!r) return false;
+  var col = ROOM_HEAD.indexOf(field) + 1;
+  d.ss.getSheetByName('Rooms').getRange(r._row, col).setValue(value);
+  return true;
+}
+
+/* ---------------- actions ---------------- */
+
+function handle_(p) {
+  var d = db_();
+  var action = p.action;
+
+  if (action === 'state') return publicState_(d);
+
+  if (action === 'login') {
+    var a0 = auth_(d, p.pin);
+    return a0 ? {ok: true, role: a0.role, name: a0.name, rooms: a0.rooms}
+              : {ok: false, error: 'The gate does not recognize that PIN.'};
+  }
+
+  if (action === 'book') {
+    var room = d.rooms.filter(function (r) { return r.id === p.roomId; })[0];
+    if (!room) return {ok: false, error: 'No such chamber.'};
+    if (room.closed) return {ok: false, error: 'That chamber is closed by order of the Crown.'};
+    if (!p.guestName || !String(p.guestName).trim()) return {ok: false, error: 'The royal ledger requires a name.'};
+    if (!p.start || !p.end || p.start >= p.end) return {ok: false, error: 'Pick a valid check-in and check-out.'};
+    if (p.start < today_()) return {ok: false, error: 'The castle does not accept bookings in the past. Yet.'};
+    if (bookingConflict_(d, room, p.start, p.end)) return {ok: false, error:
+      (Number(room.capacity) || 1) > 1 ? 'The chamber is full for part of that range.' : 'Alas — someone claimed those nights first.'};
+    var code = 'WC-' + Utilities.getUuid().replace(/-/g, '').slice(0, 4).toUpperCase();
+    var gEmail = String(p.guestEmail || '').trim();
+    d.ss.getSheetByName('Bookings').appendRow(
+      ['b' + new Date().getTime(), p.roomId, 'guest', String(p.guestName).trim(),
+       p.start, p.end, code, 'guest', today_(), gEmail]);
+    var when = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
+    notify_(d, room, '🏰 New booking: ' + roomName_(room),
+      String(p.guestName).trim() + ' booked ' + roomName_(room) + ', ' + when + '. Code ' + code + '.');
+    mailGuest_(d, gEmail, "🏰 You're booked at Wes's Castle",
+      'Your chamber is secured!\n\n' + roomName_(room) + '\n' + fmtD_(p.start) + ' → ' + fmtD_(p.end) +
+      ' (' + nights_(p.start, p.end) + ' nights)\n\nConfirmation code: ' + code +
+      '\n\nUse this code on the castle site to view, add to calendar, or cancel your stay.' +
+      '\nCheck-out is before the King starts vacuuming pointedly.');
+    return {ok: true, code: code};
+  }
+
+  if (action === 'cancelByCode') {
+    var code2 = String(p.code || '').trim().toUpperCase();
+    var hit = d.bookings.filter(function (b) { return b.code && b.code.toUpperCase() === code2; })[0];
+    if (!hit) return {ok: false, error: 'No reservation bears that code.'};
+    d.ss.getSheetByName('Bookings').deleteRow(hit._row);
+    var cRoom = d.rooms.filter(function (r) { return r.id === hit.roomId; })[0];
+    var cWhen = fmtD_(hit.start) + ' → ' + fmtD_(hit.end);
+    notify_(d, cRoom, '🏰 Cancelled: ' + roomName_(cRoom),
+      hit.guestName + "'s stay " + cWhen + ' was cancelled. Dates are free again.');
+    mailGuest_(d, hit.guestEmail, "🏰 Your Wes's Castle stay is cancelled",
+      'Your reservation in ' + roomName_(cRoom) + ' (' + cWhen + ') has been cancelled.' +
+      '\nThe castle mourns, briefly, then re-lists the chamber.');
+    return {ok: true};
+  }
+
+  if (action === 'findByCode') {
+    var code3 = String(p.code || '').trim().toUpperCase();
+    var hit2 = d.bookings.filter(function (b) { return b.code && b.code.toUpperCase() === code3; })[0];
+    if (!hit2) return {ok: false, error: 'No reservation bears that code.'};
+    return {ok: true, booking: {roomId: hit2.roomId, guestName: hit2.guestName,
+      start: hit2.start, end: hit2.end, code: hit2.code}};
+  }
+
+  /* ----- guest accounts (email + password; emailed code for resets) ----- */
+
+  if (action === 'signup') {
+    var suEmail = String(p.email || '').trim().toLowerCase();
+    var suPass = String(p.password || '');
+    if (suEmail.indexOf('@') < 1) return {ok: false, error: 'Enter a real email address.'};
+    if (suPass.length < 6) return {ok: false, error: 'Passwords need at least 6 characters.'};
+    var shG = d.ss.getSheetByName('Guests');
+    var exists = readAll_(shG).filter(function (g) { return String(g.email).toLowerCase() === suEmail; })[0];
+    if (exists) return {ok: false, error: 'That email already holds a castle key — sign in, or reset thy password.'};
+    var salt = Utilities.getUuid();
+    shG.appendRow([suEmail, hashPass_(salt, suPass), salt, String(p.name || '').trim(), new Date().getTime()]);
+    logNotify_(d, suEmail, 'castle key', 'account created');
+    return {ok: true, token: makeToken_(d, suEmail), email: suEmail, name: String(p.name || '').trim()};
+  }
+
+  if (action === 'signin') {
+    var siEmail = String(p.email || '').trim().toLowerCase();
+    var gRow = readAll_(d.ss.getSheetByName('Guests')).filter(function (g) {
+      return String(g.email).toLowerCase() === siEmail;
+    })[0];
+    if (!gRow || hashPass_(String(gRow.salt), String(p.password || '')) !== String(gRow.passHash))
+      return {ok: false, error: 'The gate does not recognize that email & password.'};
+    return {ok: true, token: makeToken_(d, siEmail), email: siEmail, name: String(gRow.name || '')};
+  }
+
+  if (action === 'resetStart') {
+    var rsEmail = String(p.email || '').trim().toLowerCase();
+    var rsGuest = readAll_(d.ss.getSheetByName('Guests')).filter(function (g) {
+      return String(g.email).toLowerCase() === rsEmail;
+    })[0];
+    if (!rsGuest) return {ok: false, error: 'No castle key is held by that email. Create one instead.'};
+    var shS = d.ss.getSheetByName('Sessions');
+    var code6 = String(Math.floor(100000 + Math.random() * 900000));
+    var expS = new Date().getTime() + 10 * 60 * 1000;
+    var pendingRow = readAll_(shS).filter(function (s) {
+      return String(s.email).toLowerCase() === rsEmail && !String(s.token);
+    })[0];
+    if (pendingRow) {
+      shS.getRange(pendingRow._row, 3).setValue(code6);
+      shS.getRange(pendingRow._row, 4).setValue(expS);
+    } else {
+      shS.appendRow(['', rsEmail, code6, expS, new Date().getTime()]);
+    }
+    try {
+      MailApp.sendEmail(rsEmail, '🏰 Password reset code: ' + code6,
+        'Speak this at the gate to set a new password: ' + code6 +
+        '\n\nIt expires in 10 minutes. If thou didst not request it, ignore this raven.');
+      logNotify_(d, rsEmail, 'reset code', 'sent');
+    } catch (e) {
+      logNotify_(d, rsEmail, 'reset code', 'ERROR: ' + e.message);
+      return {ok: false, error: 'Could not send the code: ' + e.message};
+    }
+    return {ok: true};
+  }
+
+  if (action === 'resetFinish') {
+    var rfEmail = String(p.email || '').trim().toLowerCase();
+    var rfPass = String(p.password || '');
+    if (rfPass.length < 6) return {ok: false, error: 'Passwords need at least 6 characters.'};
+    var shS2 = d.ss.getSheetByName('Sessions');
+    var nowR = new Date().getTime();
+    var codeRow = readAll_(shS2).filter(function (s) {
+      return String(s.email).toLowerCase() === rfEmail && String(s.code) &&
+             String(s.code) === String(p.code || '').trim() && Number(s.expires) > nowR;
+    })[0];
+    if (!codeRow) return {ok: false, error: 'That code is wrong or expired. Request a fresh one.'};
+    var shG2 = d.ss.getSheetByName('Guests');
+    var gRow2 = readAll_(shG2).filter(function (g) { return String(g.email).toLowerCase() === rfEmail; })[0];
+    if (!gRow2) return {ok: false, error: 'No castle key is held by that email.'};
+    var salt2 = Utilities.getUuid();
+    shG2.getRange(gRow2._row, 2).setValue(hashPass_(salt2, rfPass));
+    shG2.getRange(gRow2._row, 3).setValue(salt2);
+    shS2.getRange(codeRow._row, 3).setValue('');
+    logNotify_(d, rfEmail, 'castle key', 'password reset');
+    return {ok: true, token: makeToken_(d, rfEmail), email: rfEmail, name: String(gRow2.name || '')};
+  }
+
+  if (action === 'myStays') {
+    var sessRow = readAll_(d.ss.getSheetByName('Sessions')).filter(function (s) {
+      return String(s.token) && String(s.token) === String(p.token || '');
+    })[0];
+    if (!sessRow || Number(sessRow.expires) < new Date().getTime())
+      return {ok: false, error: 'Thy castle key expired — sign in again.', expired: true};
+    var em = String(sessRow.email).toLowerCase();
+    var mine = d.bookings.filter(function (b) {
+      return b.type === 'guest' && String(b.guestEmail || '').toLowerCase() === em;
+    }).map(function (b) {
+      return {roomId: b.roomId, guestName: b.guestName, start: b.start, end: b.end, code: b.code};
+    });
+    return {ok: true, email: em, stays: mine};
+  }
+
+  /* ----- authorized ops ----- */
+  var a = auth_(d, p.pin);
+  if (!a) return {ok: false, error: 'The gate does not recognize that PIN.'};
+  function canRoom(id) { return a.role === 'admin' || a.rooms.indexOf(id) >= 0; }
+
+  if (action === 'block') {
+    if (!canRoom(p.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    if (!p.start || !p.end || p.start >= p.end) return {ok: false, error: 'Pick a valid date range.'};
+    if (overlap_(d, p.roomId, p.start, p.end)) return {ok: false, error: 'Those dates already have a booking or block. Release it first.'};
+    d.ss.getSheetByName('Bookings').appendRow(
+      ['b' + new Date().getTime(), p.roomId, 'block', String(p.note || '').trim() || 'Blocked',
+       p.start, p.end, '', a.role, today_(), '']);
+    var bRoom = d.rooms.filter(function (r) { return r.id === p.roomId; })[0];
+    notify_(d, bRoom, '🏰 Dates blocked: ' + roomName_(bRoom),
+      fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' blocked by ' + a.name +
+      (p.note ? ' — ' + String(p.note).trim() : '') + '.');
+    return {ok: true};
+  }
+
+  if (action === 'unbook') {
+    var b2 = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
+    if (!b2) return {ok: false, error: 'Reservation not found.'};
+    if (!canRoom(b2.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    d.ss.getSheetByName('Bookings').deleteRow(b2._row);
+    var uRoom = d.rooms.filter(function (r) { return r.id === b2.roomId; })[0];
+    var uWhen = fmtD_(b2.start) + ' → ' + fmtD_(b2.end);
+    notify_(d, uRoom, '🏰 Released: ' + roomName_(uRoom),
+      (b2.type === 'block' ? 'Block "' + b2.guestName + '"' : b2.guestName + "'s stay") +
+      ' (' + uWhen + ') was released by ' + a.name + '.');
+    mailGuest_(d, b2.guestEmail, "🏰 Your Wes's Castle stay is cancelled",
+      'Your reservation in ' + roomName_(uRoom) + ' (' + uWhen + ') was cancelled by the castle.' +
+      '\nQuestions? Reply to this email and the Crown shall answer.');
+    return {ok: true};
+  }
+
+  if (action === 'editBooking') {
+    var eb = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
+    if (!eb) return {ok: false, error: 'Reservation not found.'};
+    var newRoom = d.rooms.filter(function (r) { return r.id === p.roomId; })[0];
+    if (!newRoom) return {ok: false, error: 'No such chamber.'};
+    if (!canRoom(eb.roomId) || !canRoom(newRoom.id)) return {ok: false, error: 'That chamber is not yours to command.'};
+    if (!p.start || !p.end || p.start >= p.end) return {ok: false, error: 'Pick a valid date range.'};
+    var newName = String(p.guestName || '').trim() || eb.guestName;
+    var clash = eb.type === 'block'
+      ? overlap_(d, newRoom.id, p.start, p.end, eb.id)
+      : bookingConflict_(d, newRoom, p.start, p.end, eb.id);
+    if (clash) return {ok: false, error: 'Those dates clash with another booking or block.'};
+    var shE = d.ss.getSheetByName('Bookings');
+    shE.getRange(eb._row, BOOKING_HEAD.indexOf('roomId') + 1).setValue(newRoom.id);
+    shE.getRange(eb._row, BOOKING_HEAD.indexOf('guestName') + 1).setValue(newName);
+    shE.getRange(eb._row, BOOKING_HEAD.indexOf('start') + 1).setValue(p.start);
+    shE.getRange(eb._row, BOOKING_HEAD.indexOf('end') + 1).setValue(p.end);
+    var oldRoomE = d.rooms.filter(function (r) { return r.id === eb.roomId; })[0];
+    var movedE = newRoom.id !== eb.roomId;
+    var whenE = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
+    notify_(d, newRoom, '🏰 Changed: ' + roomName_(newRoom),
+      newName + (eb.type === 'block' ? ' (block)' : '') + ' is now ' + whenE +
+      (movedE ? ', moved from ' + roomName_(oldRoomE) : '') + '. Changed by ' + a.name + '.',
+      movedE ? oldRoomE : null);
+    mailGuest_(d, eb.guestEmail, "🏰 Thy Wes's Castle stay was updated",
+      'The castle updated your reservation:\n\n' + roomName_(newRoom) + '\n' + whenE +
+      '\n\nYour confirmation code is unchanged: ' + eb.code);
+    return {ok: true};
+  }
+
+  /* ----- admin only ----- */
+  if (a.role !== 'admin') return {ok: false, error: 'Only the Crown may do that.'};
+
+  if (action === 'assignOwner') {
+    var name = String(p.ownerName || '').trim();
+    if (!setRoom_(d, p.roomId, 'ownerName', name)) return {ok: false, error: 'No such chamber.'};
+    if (!name) { setRoom_(d, p.roomId, 'ownerPin', ''); setRoom_(d, p.roomId, 'ownerNotify', ''); }
+    else {
+      if (!p.keepPin) setRoom_(d, p.roomId, 'ownerPin', String(p.ownerPin || '').trim());
+      if (p.ownerNotify !== undefined && !p.keepNotify)
+        setRoom_(d, p.roomId, 'ownerNotify', String(p.ownerNotify || '').trim());
+    }
+    if (p.capacity !== undefined) {
+      var cap2 = Math.max(1, Math.min(20, parseInt(p.capacity, 10) || 1));
+      setRoom_(d, p.roomId, 'capacity', cap2);
+    }
+    return {ok: true};
+  }
+
+  if (action === 'testNotify') {
+    var tAddrs = splitAddrs_(d.settings.adminNotify);
+    if (!tAddrs.length) return {ok: false, error: "Set the Crown's notification address first, then test."};
+    try {
+      MailApp.sendEmail(tAddrs[0], "🏰 Test decree from Wes's Castle",
+        'Hear ye! Notifications are working. Email quota left today: ' + MailApp.getRemainingDailyQuota() + '.');
+      return {ok: true, sent: tAddrs[0].replace(/^(..)[^@]*(@.*)$/, '$1…$2')};
+    } catch (e) {
+      return {ok: false, error: 'Google blocked the send (' + e.message + '). Fix: open the Apps Script editor, ' +
+        'pick "authorizeCastle" in the toolbar dropdown, press Run, and approve the permission dialog.'};
+    }
+  }
+
+  if (action === 'setAdminNotify') {
+    var sh2 = d.ss.getSheetByName('Settings');
+    var rows2 = readAll_(sh2);
+    var row2 = rows2.filter(function (s) { return s.key === 'adminNotify'; })[0];
+    var val = String(p.value || '').trim();
+    if (row2) sh2.getRange(row2._row, 2).setValue(val);
+    else sh2.appendRow(['adminNotify', val]);
+    return {ok: true, set: splitAddrs_(val).length > 0};
+  }
+
+  if (action === 'toggleClosed') {
+    var r3 = d.rooms.filter(function (x) { return x.id === p.roomId; })[0];
+    if (!r3) return {ok: false, error: 'No such chamber.'};
+    setRoom_(d, p.roomId, 'closed', r3.closed ? 'FALSE' : 'TRUE');
+    return {ok: true, closed: !r3.closed};
+  }
+
+  if (action === 'setAdminPin') {
+    var np = String(p.newPin || '').trim();
+    if (np.length < 4) return {ok: false, error: 'PIN must be at least 4 characters.'};
+    var sh = d.ss.getSheetByName('Settings');
+    var rows = readAll_(sh);
+    var row = rows.filter(function (s) { return s.key === 'adminPin'; })[0];
+    if (row) sh.getRange(row._row, 2).setValue(np);
+    else sh.appendRow(['adminPin', np]);
+    return {ok: true};
+  }
+
+  return {ok: false, error: 'Unknown decree: ' + action};
+}
