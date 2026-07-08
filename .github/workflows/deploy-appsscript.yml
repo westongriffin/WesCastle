@@ -18,10 +18,14 @@ jobs:
           node-version: '20'
       - name: Install clasp
         run: npm install -g @google/clasp@3.3.0
-      - name: Write clasp credentials
-        run: printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+      - name: Write clasp credentials (from base64 secret)
         env:
-          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASPRC_B64: ${{ secrets.CLASPRC_B64 }}
+        run: |
+          if [ -z "$CLASPRC_B64" ]; then echo "CLASPRC_B64 secret is empty"; exit 1; fi
+          printf '%s' "$CLASPRC_B64" | base64 -d > "$HOME/.clasprc.json"
+          # sanity: valid JSON with a refresh_token?
+          node -e "const c=require(process.env.HOME+'/.clasprc.json'); if(!JSON.stringify(c).includes('refresh_token')){throw new Error('no refresh_token in credential')}; console.log('credential OK')"
       - name: Deploy WesCastleSync.gs
         env:
           SCRIPT_ID: '1PNeHFffcPYmkH0KcE0fKanVvWattES3PKM3CfaVJUEjXPzonMyFe20Zl'
