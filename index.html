@@ -255,12 +255,12 @@ const Local = {
     if(mine.length) return {role:'owner', name:mine[0].ownerName||'Keeper', rooms:mine.map(r=>r.id)};
     return null;
   },
-  overlap(d,roomId,start,end){
-    return d.bookings.some(b=>b.roomId===roomId && start<b.end && end>b.start);
+  overlap(d,roomId,start,end,excludeId){
+    return d.bookings.some(b=>b.roomId===roomId && b.id!==excludeId && start<b.end && end>b.start);
   },
-  bookConflict(d,room,start,end){ // guest bookings share multi-capacity rooms; blocks claim everything
+  bookConflict(d,room,start,end,excludeId){ // guest bookings share multi-capacity rooms; blocks claim everything
     const cap=room.capacity||1;
-    const ov=d.bookings.filter(b=>b.roomId===room.id && start<b.end && end>b.start);
+    const ov=d.bookings.filter(b=>b.roomId===room.id && b.id!==excludeId && start<b.end && end>b.start);
     if(ov.some(b=>b.type==='block')) return true;
     if(ov.length<cap) return false;
     let day=start;
@@ -375,6 +375,21 @@ const Local = {
         start:p.start, end:p.end, code:'', createdBy:a.role, createdAt:todayIso()});
       this.save(d); return {ok:true};
     }
+    if(action==='editBooking'){
+      const b=d.bookings.find(x=>x.id===p.bookingId);
+      if(!b) return {ok:false,error:'Reservation not found.'};
+      const nr=d.rooms.find(r=>r.id===p.roomId);
+      if(!nr) return {ok:false,error:'No such chamber.'};
+      if(!canRoom(b.roomId)||!canRoom(nr.id)) return {ok:false,error:'That chamber is not yours to command.'};
+      if(!p.start||!p.end||p.start>=p.end) return {ok:false,error:'Pick a valid date range.'};
+      const clash = b.type==='block'
+        ? this.overlap(d,nr.id,p.start,p.end,b.id)
+        : this.bookConflict(d,nr,p.start,p.end,b.id);
+      if(clash) return {ok:false,error:'Those dates clash with another booking or block.'};
+      b.roomId=nr.id; b.start=p.start; b.end=p.end;
+      b.guestName=(p.guestName||'').trim()||b.guestName;
+      this.save(d); return {ok:true};
+    }
     if(action==='unbook'){
       const i=d.bookings.findIndex(b=>b.id===p.bookingId);
       if(i<0) return {ok:false,error:'Reservation not found.'};
@@ -455,6 +470,7 @@ function occupiedSet(roomId){
   const cap=(room(roomId)||{}).capacity||1;
   const m={};
   for(const b of S.bookings) if(b.roomId===roomId){
+    if(BK && BK.mode==='edit' && BK.bookingId===b.id) continue; // its own nights are reclaimable mid-edit
     let d=b.start;
     while(d<b.end){
       const e=m[d]||(m[d]={g:0,blk:false});
@@ -714,7 +730,9 @@ function bookModalHTML(){
   const b1=UIS.calBase, b2=new Date(b1.getFullYear(), b1.getMonth()+1, 1);
   const atStart = b1 <= calNavLimits();
   const isBlock = BK.mode==='block';
-  const forGuest = !isBlock && !isSearch && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
+  const isEdit = BK.mode==='edit';
+  const forGuest = !isBlock && !isSearch && !isEdit && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
+  const myRooms = isEdit && sess ? S.rooms.filter(rm=>sess.role==='admin'||sess.rooms.includes(rm.id)) : [];
   let summary='';
   if(BK.start&&BK.end){
     const n=nightsBetween(BK.start,BK.end);
@@ -726,11 +744,18 @@ function bookModalHTML(){
     <h2>${r.emoji} ${esc(r.name)}</h2>
     <div class="sub">${isSearch
       ? 'Choose check-in and check-out — then the chambers will show who&rsquo;s free.'
+      : isEdit
+      ? (BK.type==='block' ? 'Editing this block — adjust the dates, reason, or chamber.'
+         : 'Editing this reservation — change the dates, name, or chamber. The guest&rsquo;s confirmation code stays the same.')
       : isBlock
       ? 'Blocking dates — guests will not be able to book these nights.'
       : forGuest
       ? 'Booking on behalf of a guest — pass them the confirmation code when it appears.'
       : 'Pick a check-in day, then a check-out day.'}${!isBlock&&!isSearch&&(r.capacity||1)>1?` This chamber hosts up to ${r.capacity} parties a night — dates only show as taken when it&rsquo;s full.`:''}${r.dark&&!isBlock?' The management is not responsible for anything you hear after midnight.':''}</div>
+    ${isEdit && myRooms.length>1 ? `<div class="field"><label>Chamber</label>
+      <select id="bk-room" onchange="ACT.editRoom(this.value)" style="width:100%;padding:11px 13px;border:1.5px solid var(--line);border-radius:10px;background:#fff;font-size:16px">
+        ${myRooms.map(rm=>`<option value="${rm.id}" ${rm.id===BK.roomId?'selected':''}>${rm.emoji} ${esc(rm.name)}</option>`).join('')}
+      </select></div>`:''}
     <div class="cal-nav">
       <button data-act="calPrev" ${atStart?'disabled':''}>‹</button>
       <button data-act="calNext">›</button>
@@ -743,17 +768,17 @@ function bookModalHTML(){
     </div>
     ${summary}
     ${isSearch?'':`<div class="field">
-      <label>${isBlock?'Reason (optional)':forGuest?'Guest&rsquo;s name':'Your name'}</label>
+      <label>${isBlock?'Reason (optional)':isEdit?(BK.type==='block'?'Reason':'Guest&rsquo;s name'):forGuest?'Guest&rsquo;s name':'Your name'}</label>
       <input id="bk-name" placeholder="${isBlock?'e.g. Family visit, repairs, royal decree…':'e.g. Sir Reginald of the Couch'}" value="${esc(BK.name||'')}">
     </div>`}
-    ${isSearch||isBlock?'':`<div class="field">
+    ${isSearch||isBlock||isEdit?'':`<div class="field">
       <label>${forGuest?'Guest&rsquo;s email (optional)':'Email (optional)'}</label>
       <input id="bk-email" type="email" placeholder="Gets the confirmation code by email" value="${esc(BK.email||'')}">
     </div>`}
     <div class="mrow">
       <button class="btn ghost" data-act="closeModal">Never mind</button>
-      <button class="btn ${isBlock?'':'gold'}" data-act="${isSearch?'doSearch':isBlock?'doBlock':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
-        ${isSearch?'🔭 Show available chambers':isBlock?'🚫 Block these dates':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
+      <button class="btn ${isBlock||isEdit?'':'gold'}" data-act="${isSearch?'doSearch':isBlock?'doBlock':isEdit?'doEdit':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
+        ${isSearch?'🔭 Show available chambers':isBlock?'🚫 Block these dates':isEdit?'💾 Save changes':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
     </div>`;
 }
 function redrawBookModal(){
@@ -793,6 +818,7 @@ function keeperView(){
             <span class="badge ${b.type}">${b.type==='guest'?'GUEST':'BLOCK'}</span>
             <span class="name">${esc(b.guestName)}</span>
             <span class="dates">${fmt(b.start)} → ${fmt(b.end)} · ${nightsBetween(b.start,b.end)}n</span>
+            <button class="btn ghost sm" data-act="openEdit" data-arg="${b.id}">✏️ Edit</button>
             <button class="btn danger sm" data-act="unbook" data-arg="${b.id}">Release</button>
           </div>`).join('')
         : `<div class="empty">No upcoming reservations. The chamber gathers dust majestically.</div>`}
@@ -1119,6 +1145,31 @@ const ACT = {
     S.bookings=S.bookings.filter(x=>x.id!==id);
     render();
     toast('Released. The chamber is free once more.');
+    refresh(true);
+  },
+  openEdit(id){
+    const b=S.bookings.find(x=>x.id===id);
+    if(!b) return;
+    const d0=fromIso(b.start);
+    UIS.calBase=new Date(d0.getFullYear(), d0.getMonth(), 1);
+    BK={roomId:b.roomId, mode:'edit', bookingId:id, type:b.type, start:b.start, end:b.end, name:b.guestName, email:''};
+    openModal(bookModalHTML());
+  },
+  editRoom(roomId){
+    if(!BK || BK.mode!=='edit') return;
+    BK.roomId=roomId;
+    redrawBookModal();
+  },
+  async doEdit(){
+    const name=document.getElementById('bk-name').value.trim();
+    const done=pending('💾 Saving…');
+    const r=await api('editBooking',{pin:sess.pin, bookingId:BK.bookingId, roomId:BK.roomId, start:BK.start, end:BK.end, guestName:name});
+    if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    const b=S.bookings.find(x=>x.id===BK.bookingId);
+    if(b){ b.roomId=BK.roomId; b.start=BK.start; b.end=BK.end; if(name) b.guestName=name; }
+    closeModal(); render(); toast('Reservation updated. ✏️');
     refresh(true);
   },
   async toggleClosed(id){
