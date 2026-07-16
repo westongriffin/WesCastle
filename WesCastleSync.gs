@@ -240,8 +240,26 @@ function auth_(d, pin) {
 
 function overlap_(d, roomId, start, end, excludeId) {
   return d.bookings.some(function (b) {
-    return b.roomId === roomId && b.id !== excludeId && start < b.end && end > b.start;
+    return b.roomId === roomId && b.id !== excludeId && b.type !== 'request' &&
+           start < b.end && end > b.start;
   });
+}
+
+/** Remove [start,end) from every block overlapping it — the block splits into
+ *  up to two remainder blocks. Bottom-up deletes keep row numbers honest. */
+function carveBlocks_(d, roomId, start, end) {
+  var sh = d.ss.getSheetByName('Bookings');
+  var blocks = d.bookings.filter(function (b) {
+    return b.roomId === roomId && b.type === 'block' && start < b.end && end > b.start;
+  }).sort(function (a, b) { return b._row - a._row; });
+  blocks.forEach(function (b) {
+    sh.deleteRow(b._row);
+    if (b.start < start) sh.appendRow(['b' + new Date().getTime() + 'a' + Math.floor(Math.random() * 1000),
+      roomId, 'block', b.guestName, b.start, start, '', b.createdBy, today_(), '']);
+    if (end < b.end) sh.appendRow(['b' + new Date().getTime() + 'b' + Math.floor(Math.random() * 1000),
+      roomId, 'block', b.guestName, end, b.end, '', b.createdBy, today_(), '']);
+  });
+  return blocks.length;
 }
 
 function addDays_(s, n) {
@@ -252,10 +270,11 @@ function addDays_(s, n) {
 
 /** Capacity-aware conflict for GUEST bookings: a room with capacity N hosts up
  *  to N overlapping stays per night; blocks always claim the whole room. */
-function bookingConflict_(d, room, start, end, excludeId) {
+function bookingConflict_(d, room, start, end, excludeId, ignoreBlocks) {
   var cap = Number(room.capacity) || 1;
   var overl = d.bookings.filter(function (b) {
-    return b.roomId === room.id && b.id !== excludeId && start < b.end && end > b.start;
+    return b.roomId === room.id && b.id !== excludeId && b.type !== 'request' &&
+           !(ignoreBlocks && b.type === 'block') && start < b.end && end > b.start;
   });
   if (overl.some(function (b) { return b.type === 'block'; })) return true;
   if (overl.length < cap) return false;
@@ -351,7 +370,31 @@ function handle_(p) {
     var hit2 = d.bookings.filter(function (b) { return b.code && b.code.toUpperCase() === code3; })[0];
     if (!hit2) return {ok: false, error: 'No reservation bears that code.'};
     return {ok: true, booking: {roomId: hit2.roomId, guestName: hit2.guestName,
-      start: hit2.start, end: hit2.end, code: hit2.code}};
+      start: hit2.start, end: hit2.end, code: hit2.code, pending: hit2.type === 'request'}};
+  }
+
+  if (action === 'requestBook') {
+    var rqRoom = d.rooms.filter(function (r) { return r.id === p.roomId; })[0];
+    if (!rqRoom) return {ok: false, error: 'No such chamber.'};
+    if (rqRoom.closed) return {ok: false, error: 'That chamber is closed by order of the Crown.'};
+    if (!p.guestName || !String(p.guestName).trim()) return {ok: false, error: 'The royal ledger requires a name.'};
+    if (!p.start || !p.end || p.start >= p.end) return {ok: false, error: 'Pick a valid check-in and check-out.'};
+    if (p.start < today_()) return {ok: false, error: 'The castle does not accept requests for the past. Yet.'};
+    if (bookingConflict_(d, rqRoom, p.start, p.end, null, true))
+      return {ok: false, error: 'Other guests already hold those nights — a request cannot help there.'};
+    var rqCode = 'WC-' + Utilities.getUuid().replace(/-/g, '').slice(0, 4).toUpperCase();
+    var rqEmail = String(p.guestEmail || '').trim();
+    d.ss.getSheetByName('Bookings').appendRow(
+      ['b' + new Date().getTime(), p.roomId, 'request', String(p.guestName).trim(),
+       p.start, p.end, rqCode, 'guest', today_(), rqEmail]);
+    var rqWhen = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
+    notify_(d, rqRoom, '🙏 Request: ' + roomName_(rqRoom),
+      String(p.guestName).trim() + ' asks for ' + rqWhen + ' (currently blocked). ' +
+      "Approve or deny in the Keeper's Entrance. Code " + rqCode + '.');
+    mailGuest_(d, rqEmail, "🏰 Thy request is with the Crown",
+      'Your request is in:\n\n' + roomName_(rqRoom) + '\n' + rqWhen +
+      '\n\nCode: ' + rqCode + '\n\nThe castle will send word once the keeper decides.');
+    return {ok: true, code: rqCode, pending: true};
   }
 
   /* ----- guest accounts (email + password; emailed code for resets) ----- */
@@ -440,9 +483,10 @@ function handle_(p) {
       return {ok: false, error: 'Thy castle key expired — sign in again.', expired: true};
     var em = String(sessRow.email).toLowerCase();
     var mine = d.bookings.filter(function (b) {
-      return b.type === 'guest' && String(b.guestEmail || '').toLowerCase() === em;
+      return (b.type === 'guest' || b.type === 'request') && String(b.guestEmail || '').toLowerCase() === em;
     }).map(function (b) {
-      return {roomId: b.roomId, guestName: b.guestName, start: b.start, end: b.end, code: b.code};
+      return {roomId: b.roomId, guestName: b.guestName, start: b.start, end: b.end, code: b.code,
+              pending: b.type === 'request'};
     });
     return {ok: true, email: em, stays: mine};
   }
@@ -479,6 +523,55 @@ function handle_(p) {
     mailGuest_(d, b2.guestEmail, "🏰 Your Wes's Castle stay is cancelled",
       'Your reservation in ' + roomName_(uRoom) + ' (' + uWhen + ') was cancelled by the castle.' +
       '\nQuestions? Reply to this email and the Crown shall answer.');
+    return {ok: true};
+  }
+
+  if (action === 'unblockRange') {
+    var ub = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
+    if (!ub || ub.type !== 'block') return {ok: false, error: 'Block not found.'};
+    if (!canRoom(ub.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    var uS = p.start > ub.start ? p.start : ub.start;
+    var uE = p.end < ub.end ? p.end : ub.end;
+    if (!p.start || !p.end || uS >= uE) return {ok: false, error: 'Pick dates inside the block.'};
+    var ubRoom = d.rooms.filter(function (r) { return r.id === ub.roomId; })[0];
+    carveBlocks_(d, ub.roomId, uS, uE);
+    notify_(d, ubRoom, '🏰 Unblocked: ' + roomName_(ubRoom),
+      fmtD_(uS) + ' → ' + fmtD_(uE) + ' released from block "' + ub.guestName + '" by ' + a.name +
+      '. The rest of the block stands.');
+    return {ok: true};
+  }
+
+  if (action === 'approveRequest') {
+    var apr = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
+    if (!apr || apr.type !== 'request') return {ok: false, error: 'Request not found — it may already be decided.'};
+    if (!canRoom(apr.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    var aprRoom = d.rooms.filter(function (r) { return r.id === apr.roomId; })[0];
+    if (bookingConflict_(d, aprRoom, apr.start, apr.end, apr.id, true))
+      return {ok: false, error: 'Other guests now hold those nights — the request cannot be approved as-is.'};
+    // convert first (no row indices move), then carve the blocks it sits on
+    d.ss.getSheetByName('Bookings').getRange(apr._row, BOOKING_HEAD.indexOf('type') + 1).setValue('guest');
+    carveBlocks_(d, apr.roomId, apr.start, apr.end);
+    var aprWhen = fmtD_(apr.start) + ' → ' + fmtD_(apr.end) + ' (' + nights_(apr.start, apr.end) + 'n)';
+    notify_(d, aprRoom, '✅ Approved: ' + roomName_(aprRoom),
+      apr.guestName + ' is now booked ' + aprWhen + ' (request approved by ' + a.name + ').');
+    mailGuest_(d, apr.guestEmail, "🏰 Thy request is GRANTED",
+      'Rejoice! The castle approved your stay:\n\n' + roomName_(aprRoom) + '\n' + aprWhen +
+      '\n\nYour confirmation code is unchanged: ' + apr.code);
+    return {ok: true};
+  }
+
+  if (action === 'denyRequest') {
+    var den = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
+    if (!den || den.type !== 'request') return {ok: false, error: 'Request not found — it may already be decided.'};
+    if (!canRoom(den.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    var denRoom = d.rooms.filter(function (r) { return r.id === den.roomId; })[0];
+    d.ss.getSheetByName('Bookings').deleteRow(den._row);
+    var denWhen = fmtD_(den.start) + ' → ' + fmtD_(den.end);
+    notify_(d, denRoom, '❌ Denied: ' + roomName_(denRoom),
+      den.guestName + "'s request for " + denWhen + ' was denied by ' + a.name + '.');
+    mailGuest_(d, den.guestEmail, "🏰 About thy request…",
+      'Alas — the castle cannot host you ' + denWhen + ' in ' + roomName_(denRoom) +
+      '. Those dates remain spoken for.\n\nPerhaps other dates? The calendar awaits.');
     return {ok: true};
   }
 
