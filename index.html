@@ -106,6 +106,8 @@ footer button:hover{text-decoration:underline}
 .days .off{color:#c9c2b4;cursor:default;text-decoration:line-through;text-decoration-color:#d8d2c4}
 .days .booked{color:#cf8f85;cursor:not-allowed;background:repeating-linear-gradient(45deg,#fdf0ee,#fdf0ee 3px,#fae3e0 3px,#fae3e0 6px)}
 .days .booked.edge-ok{cursor:pointer}
+.days .reqable{color:#9a6b00;background:repeating-linear-gradient(45deg,#fdf3dd,#fdf3dd 3px,#f7e8c3 3px,#f7e8c3 6px)}
+.days .reqable:hover{background:#f3e0a8}
 .days .today{box-shadow:inset 0 0 0 1.5px var(--gold)}
 .days .range{background:#ece5f8;border-radius:0}
 .days .sel{background:var(--purple)!important;color:#fff!important;font-weight:700}
@@ -132,6 +134,7 @@ footer button:hover{text-decoration:underline}
 .bk-row .badge{font-size:11px;font-weight:800;letter-spacing:.5px;padding:3px 9px;border-radius:99px}
 .badge.guest{background:#e3f2e9;color:var(--green)}
 .badge.block{background:#eee9f7;color:var(--purple)}
+.badge.request{background:#fdf3dd;color:#9a6b00}
 .bk-row .name{font-weight:600;flex:1;min-width:120px}
 .bk-row .dates{color:var(--ink2);font-size:13.5px}
 .empty{color:var(--ink2);font-size:14px;font-style:italic;padding:8px 2px}
@@ -256,11 +259,21 @@ const Local = {
     return null;
   },
   overlap(d,roomId,start,end,excludeId){
-    return d.bookings.some(b=>b.roomId===roomId && b.id!==excludeId && start<b.end && end>b.start);
+    return d.bookings.some(b=>b.roomId===roomId && b.id!==excludeId && b.type!=='request' && start<b.end && end>b.start);
   },
-  bookConflict(d,room,start,end,excludeId){ // guest bookings share multi-capacity rooms; blocks claim everything
+  carve(d,roomId,start,end){ // split every overlapping block around [start,end)
+    d.bookings=d.bookings.flatMap(b=>{
+      if(b.roomId!==roomId||b.type!=='block'||!(start<b.end&&end>b.start)) return [b];
+      const rem=[];
+      if(b.start<start) rem.push({...b, id:'b'+Date.now()+'a'+Math.floor(Math.random()*1e4), end:start});
+      if(end<b.end) rem.push({...b, id:'b'+Date.now()+'b'+Math.floor(Math.random()*1e4), start:end});
+      return rem;
+    });
+  },
+  bookConflict(d,room,start,end,excludeId,ignoreBlocks){ // guest bookings share multi-capacity rooms; blocks claim everything
     const cap=room.capacity||1;
-    const ov=d.bookings.filter(b=>b.roomId===room.id && b.id!==excludeId && start<b.end && end>b.start);
+    const ov=d.bookings.filter(b=>b.roomId===room.id && b.id!==excludeId && b.type!=='request'
+      && !(ignoreBlocks&&b.type==='block') && start<b.end && end>b.start);
     if(ov.some(b=>b.type==='block')) return true;
     if(ov.length<cap) return false;
     let day=start;
@@ -307,7 +320,21 @@ const Local = {
     if(action==='findByCode'){
       const b=d.bookings.find(b=>b.code && b.code.toUpperCase()===String(p.code||'').trim().toUpperCase());
       if(!b) return {ok:false,error:'No reservation bears that code.'};
-      return {ok:true, booking:{roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code}};
+      return {ok:true, booking:{roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code, pending:b.type==='request'}};
+    }
+    if(action==='requestBook'){
+      const rm=d.rooms.find(r=>r.id===p.roomId);
+      if(!rm) return {ok:false,error:'No such chamber.'};
+      if(rm.closed) return {ok:false,error:'That chamber is closed by order of the Crown.'};
+      if(!p.guestName||!p.guestName.trim()) return {ok:false,error:'The royal ledger requires a name.'};
+      if(!p.start||!p.end||p.start>=p.end) return {ok:false,error:'Pick a valid check-in and check-out.'};
+      if(p.start<todayIso()) return {ok:false,error:'The castle does not accept requests for the past. Yet.'};
+      if(this.bookConflict(d,rm,p.start,p.end,null,true)) return {ok:false,error:'Other guests already hold those nights — a request cannot help there.'};
+      const code='WC-'+Math.random().toString(36).slice(2,6).toUpperCase();
+      d.bookings.push({id:'b'+Date.now(), roomId:p.roomId, type:'request', guestName:p.guestName.trim(),
+        start:p.start, end:p.end, code, createdBy:'guest', createdAt:todayIso(), guestEmail:(p.guestEmail||'').trim()});
+      this.save(d);
+      return {ok:true, code, pending:true};
     }
     if(action==='signup'){
       const em=String(p.email||'').trim().toLowerCase();
@@ -360,8 +387,8 @@ const Local = {
       const row=(d.sessions||[]).find(s=>s.token && s.token===p.token);
       if(!row || row.expires<Date.now()) return {ok:false,error:'Thy castle key expired — sign in again.',expired:true};
       return {ok:true, email:row.email,
-        stays:d.bookings.filter(b=>b.type==='guest' && (b.guestEmail||'').toLowerCase()===row.email)
-          .map(b=>({roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code}))};
+        stays:d.bookings.filter(b=>(b.type==='guest'||b.type==='request') && (b.guestEmail||'').toLowerCase()===row.email)
+          .map(b=>({roomId:b.roomId, guestName:b.guestName, start:b.start, end:b.end, code:b.code, pending:b.type==='request'}))};
     }
     // ----- authorized ops below -----
     const a=this.auth(d,p.pin);
@@ -373,6 +400,33 @@ const Local = {
       if(this.overlap(d,p.roomId,p.start,p.end)) return {ok:false,error:'Those dates already have a booking or block. Release it first.'};
       d.bookings.push({id:'b'+Date.now(), roomId:p.roomId, type:'block', guestName:(p.note||'').trim()||'Blocked',
         start:p.start, end:p.end, code:'', createdBy:a.role, createdAt:todayIso()});
+      this.save(d); return {ok:true};
+    }
+    if(action==='unblockRange'){
+      const b=d.bookings.find(x=>x.id===p.bookingId);
+      if(!b || b.type!=='block') return {ok:false,error:'Block not found.'};
+      if(!canRoom(b.roomId)) return {ok:false,error:'That chamber is not yours to command.'};
+      const s0=p.start>b.start?p.start:b.start, e0=p.end<b.end?p.end:b.end;
+      if(!p.start||!p.end||s0>=e0) return {ok:false,error:'Pick dates inside the block.'};
+      this.carve(d,b.roomId,s0,e0);
+      this.save(d); return {ok:true};
+    }
+    if(action==='approveRequest'){
+      const b=d.bookings.find(x=>x.id===p.bookingId);
+      if(!b || b.type!=='request') return {ok:false,error:'Request not found — it may already be decided.'};
+      if(!canRoom(b.roomId)) return {ok:false,error:'That chamber is not yours to command.'};
+      const rm=d.rooms.find(r=>r.id===b.roomId);
+      if(this.bookConflict(d,rm,b.start,b.end,b.id,true))
+        return {ok:false,error:'Other guests now hold those nights — the request cannot be approved as-is.'};
+      b.type='guest';
+      this.carve(d,b.roomId,b.start,b.end);
+      this.save(d); return {ok:true};
+    }
+    if(action==='denyRequest'){
+      const i=d.bookings.findIndex(x=>x.id===p.bookingId);
+      if(i<0 || d.bookings[i].type!=='request') return {ok:false,error:'Request not found — it may already be decided.'};
+      if(!canRoom(d.bookings[i].roomId)) return {ok:false,error:'That chamber is not yours to command.'};
+      d.bookings.splice(i,1);
       this.save(d); return {ok:true};
     }
     if(action==='editBooking'){
@@ -464,23 +518,41 @@ async function refresh(silent){
 /* ---------------- helpers ---------------- */
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function room(id){ return S.rooms.find(r=>r.id===id); }
-function occupiedSet(roomId){
+function occupiedSet(roomId, forRequest){
   // capacity-aware: a night counts as taken only when the chamber is FULL
-  // (guest stays >= capacity) or a block claims it outright
+  // (guest stays >= capacity) or a block claims it outright; pending requests
+  // never occupy nights, and request-mode looks straight through blocks
   const cap=(room(roomId)||{}).capacity||1;
   const m={};
   for(const b of S.bookings) if(b.roomId===roomId){
+    if(b.type==='request') continue;
     if(BK && BK.mode==='edit' && BK.bookingId===b.id) continue; // its own nights are reclaimable mid-edit
     let d=b.start;
     while(d<b.end){
       const e=m[d]||(m[d]={g:0,blk:false});
-      if(b.type==='block') e.blk=true; else e.g++;
+      if(b.type==='block'){ if(!forRequest) e.blk=true; } else e.g++;
       d=addDays(d,1);
     }
   }
   const set=new Set();
   for(const d in m) if(m[d].blk || m[d].g>=cap) set.add(d);
   return set;
+}
+function blockSet(roomId){
+  const set=new Set();
+  for(const b of S.bookings) if(b.roomId===roomId && b.type==='block'){
+    let d=b.start; while(d<b.end){ set.add(d); d=addDays(d,1); }
+  }
+  return set;
+}
+function carveLocalBlocks(roomId,start,end){ // optimistic mirror of the server's block split
+  S.bookings=S.bookings.flatMap(b=>{
+    if(b.roomId!==roomId||b.type!=='block'||!(start<b.end&&end>b.start)) return [b];
+    const rem=[];
+    if(b.start<start) rem.push({...b, id:'tmp'+Math.random(), end:start});
+    if(end<b.end) rem.push({...b, id:'tmp'+Math.random(), start:end});
+    return rem;
+  });
 }
 function occupiedTonight(roomId){ return occupiedSet(roomId).has(todayIso()); }
 
@@ -496,6 +568,8 @@ function deviceStays(){
   if(S.rooms.length && !S.placeholder){
     // drop stays cancelled/released elsewhere (past bookings stay in the ledger, so history survives)
     a=a.filter(s=>S.bookings.some(b=>b.roomId===s.roomId&&b.start===s.start&&b.end===s.end));
+    // pending flips to booked the moment a request is approved
+    a=a.map(s=>({...s, pending:S.bookings.some(b=>b.type==='request'&&b.roomId===s.roomId&&b.start===s.start&&b.end===s.end)}));
     saveStays(a);
   }
   return a;
@@ -582,7 +656,7 @@ function manageHTML(){
   const n=nightsBetween(MG.start,MG.end);
   return `<button class="x" data-act="closeModal">✕</button>
     <h2>${r.emoji} ${esc(r.name)}</h2>
-    <div class="sub">Reserved for <b>${esc(MG.guestName)}</b> · code ${esc(MG.code)}</div>
+    <div class="sub">Reserved for <b>${esc(MG.guestName)}</b> · code ${esc(MG.code)} ${MG.pending?'<span class="badge request">⏳ AWAITING APPROVAL</span>':''}</div>
     <div class="sel-summary"><b>${fmtFull(MG.start)}</b> → <b>${fmtFull(MG.end)}</b> · ${n} night${n>1?'s':''}</div>
     <div class="mrow" style="justify-content:center;margin-top:16px">
       <button class="btn ghost" data-act="addIcs" data-arg="${esc(MG.code)}">📅 Apple / Outlook</button>
@@ -624,6 +698,7 @@ function guestView(){
   const stayRow = s=>{const r=room(s.roomId)||{};return `
       <div class="bk-row">
         <span style="font-size:20px">${r.emoji||'🏰'}</span>
+        ${s.pending?`<span class="badge request">⏳ REQUESTED</span>`:''}
         <span class="name">${esc(r.name||s.roomId)} <span style="color:var(--ink2);font-weight:400;font-size:12.5px">· ${esc(s.guestName)} · code ${esc(s.code)}</span></span>
         <span class="dates">${fmt(s.start)} → ${fmt(s.end)} · ${nightsBetween(s.start,s.end)}n</span>
         <button class="btn ghost sm" data-act="addIcs" data-arg="${esc(s.code)}">📅 iCal</button>
@@ -692,18 +767,23 @@ function guestView(){
 function monthGrid(base, roomId){
   const y=base.getFullYear(), m=base.getMonth();
   const first=new Date(y,m,1), startDow=first.getDay(), dim=new Date(y,m+1,0).getDate();
-  const occ=occupiedSet(roomId), today=todayIso();
+  const isReq = BK && BK.mode==='request';
+  const isUnb = BK && BK.mode==='unblock';
+  const occ=occupiedSet(roomId, isReq), today=todayIso();
+  const blks = isReq ? blockSet(roomId) : null;
   let cells='';
   for(let i=0;i<startDow;i++) cells+=`<button class="blank" tabindex="-1"></button>`;
   for(let day=1; day<=dim; day++){
     const ds=iso(new Date(y,m,day));
     const cls=[];
     if(ds<today) cls.push('off');
+    else if(isUnb && (ds<BK.blockStart || ds>BK.blockEnd)) cls.push('off'); // only this block's window
     else if(occ.has(ds)){
       cls.push('booked');
       // a booked date can still serve as a check-out day if every night before it (from start) is free
-      if(BK && BK.start && !BK.end && ds>BK.start && rangeFree(roomId,BK.start,ds)) cls.push('edge-ok');
+      if(BK && BK.start && !BK.end && ds>BK.start && rangeFree(roomId,BK.start,ds,isReq)) cls.push('edge-ok');
     }
+    else if(isReq && blks.has(ds)) cls.push('reqable'); // blocked, but a guest may ask nicely
     if(ds===today) cls.push('today');
     if(BK){
       if(ds===BK.start||ds===BK.end) cls.push('sel');
@@ -716,8 +796,8 @@ function monthGrid(base, roomId){
     <div class="dow"><div>S</div><div>M</div><div>T</div><div>W</div><div>T</div><div>F</div><div>S</div></div>
     <div class="days">${cells}</div></div>`;
 }
-function rangeFree(roomId,start,end){ // all nights in [start,end) free
-  const occ=occupiedSet(roomId);
+function rangeFree(roomId,start,end,forRequest){ // all nights in [start,end) free
+  const occ=occupiedSet(roomId, forRequest);
   let d=start; while(d<end){ if(occ.has(d)) return false; d=addDays(d,1); }
   return true;
 }
@@ -731,7 +811,9 @@ function bookModalHTML(){
   const atStart = b1 <= calNavLimits();
   const isBlock = BK.mode==='block';
   const isEdit = BK.mode==='edit';
-  const forGuest = !isBlock && !isSearch && !isEdit && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
+  const isReq = BK.mode==='request';
+  const isUnb = BK.mode==='unblock';
+  const forGuest = !isBlock && !isSearch && !isEdit && !isUnb && UIS.view==='keeper' && sess; // keeper booking on a guest's behalf
   const myRooms = isEdit && sess ? S.rooms.filter(rm=>sess.role==='admin'||sess.rooms.includes(rm.id)) : [];
   let summary='';
   if(BK.start&&BK.end){
@@ -744,6 +826,10 @@ function bookModalHTML(){
     <h2>${r.emoji} ${esc(r.name)}</h2>
     <div class="sub">${isSearch
       ? 'Choose check-in and check-out — then the chambers will show who&rsquo;s free.'
+      : isUnb
+      ? `Releasing dates from the block &ldquo;${esc(BK.name)}&rdquo; — pick the stretch to free. The rest stays blocked.`
+      : isReq
+      ? 'Amber-striped nights are blocked, but thou may ask nicely — the Crown and the chamber&rsquo;s keeper will approve or deny thy request.'
       : isEdit
       ? (BK.type==='block' ? 'Editing this block — adjust the dates, reason, or chamber.'
          : 'Editing this reservation — change the dates, name, or chamber. The guest&rsquo;s confirmation code stays the same.')
@@ -764,21 +850,26 @@ function bookModalHTML(){
     <div class="legend">
       <span><i class="l-free"></i> Available</span>
       <span><i class="l-booked"></i> Taken</span>
+      ${isReq?`<span><i style="background:repeating-linear-gradient(45deg,#fdf3dd,#fdf3dd 3px,#f7e8c3 3px,#f7e8c3 6px)"></i> Blocked — requestable</span>`:''}
       <span><i class="l-sel"></i> Your selection</span>
     </div>
+    ${BK.mode==='book' && blockSet(BK.roomId).size ? `<div style="text-align:center;margin-top:6px">
+      <button class="btn ghost sm" data-act="toRequestMode">🙏 Dates crossed out? Request them instead</button></div>` : ''}
+    ${isReq ? `<div style="text-align:center;margin-top:6px">
+      <button class="btn ghost sm" data-act="toBookMode">← Back to regular booking</button></div>` : ''}
     ${summary}
-    ${isSearch?'':`<div class="field">
+    ${isSearch||isUnb?'':`<div class="field">
       <label>${isBlock?'Reason (optional)':isEdit?(BK.type==='block'?'Reason':'Guest&rsquo;s name'):forGuest?'Guest&rsquo;s name':'Your name'}</label>
       <input id="bk-name" placeholder="${isBlock?'e.g. Family visit, repairs, royal decree…':'e.g. Sir Reginald of the Couch'}" value="${esc(BK.name||'')}">
     </div>`}
-    ${isSearch||isBlock||isEdit?'':`<div class="field">
+    ${isSearch||isBlock||isEdit||isUnb?'':`<div class="field">
       <label>${forGuest?'Guest&rsquo;s email (optional)':'Email (optional)'}</label>
-      <input id="bk-email" type="email" placeholder="Gets the confirmation code by email" value="${esc(BK.email||'')}">
+      <input id="bk-email" type="email" placeholder="${isReq?'Strongly advised — how the verdict reaches you':'Gets the confirmation code by email'}" value="${esc(BK.email||'')}">
     </div>`}
     <div class="mrow">
       <button class="btn ghost" data-act="closeModal">Never mind</button>
-      <button class="btn ${isBlock||isEdit?'':'gold'}" data-act="${isSearch?'doSearch':isBlock?'doBlock':isEdit?'doEdit':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
-        ${isSearch?'🔭 Show available chambers':isBlock?'🚫 Block these dates':isEdit?'💾 Save changes':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
+      <button class="btn ${isBlock||isEdit||isUnb?'':'gold'}" data-act="${isSearch?'doSearch':isBlock?'doBlock':isEdit?'doEdit':isReq?'doRequest':isUnb?'doUnblock':'doBook'}" ${BK.start&&BK.end?'':'disabled'}>
+        ${isSearch?'🔭 Show available chambers':isBlock?'🚫 Block these dates':isEdit?'💾 Save changes':isReq?'🙏 Send request':isUnb?'✂️ Release these dates':forGuest?'📅 Book this guest':'🏰 Claim this chamber'}</button>
     </div>`;
 }
 function redrawBookModal(){
@@ -793,17 +884,22 @@ function redrawBookModal(){
 function keeperView(){
   const myRooms = S.rooms.filter(r=> sess.role==='admin' || sess.rooms.includes(r.id));
   const today=todayIso();
+  const reqTotal = S.bookings.filter(b=>b.type==='request' && myRooms.some(r=>r.id===b.roomId)).length;
   let html = `<div class="keeper-bar">
     <span style="font-size:22px">${sess.role==='admin'?'👑':'🗝️'}</span>
     <span class="who">Keeper mode — <b>${esc(sess.name)}</b> ${sess.role==='admin'
       ? 'rules the entire castle.'
-      : 'commands ' + myRooms.map(r=>esc(r.name)).join(' & ') + '.'}</span>
+      : 'commands ' + myRooms.map(r=>esc(r.name)).join(' & ') + '.'}${reqTotal
+      ? ` · <b style="color:#ffd76e">🙏 ${reqTotal} request${reqTotal>1?'s':''} awaiting judgment</b>` : ''}</span>
     <button class="btn gold sm" data-act="logout">Leave the keep</button>
   </div>`;
 
   for(const r of myRooms){
+    const reqs = S.bookings
+      .filter(b=>b.roomId===r.id && b.type==='request' && b.end>today)
+      .sort((a,b)=>a.start<b.start?-1:1);
     const upcoming = S.bookings
-      .filter(b=>b.roomId===r.id && b.end>today)
+      .filter(b=>b.roomId===r.id && b.type!=='request' && b.end>today)
       .sort((a,b)=>a.start<b.start?-1:1);
     html += `<div class="kcard">
       <h3>${r.emoji} ${esc(r.name)} ${r.closed?'<span class="chip closed">Closed</span>':''}
@@ -812,12 +908,22 @@ function keeperView(){
         <button class="btn ghost sm" data-act="openBlock" data-arg="${r.id}">🚫 Block dates</button>
         ${sess.role==='admin'?`<button class="btn ghost sm" data-act="toggleClosed" data-arg="${r.id}">${r.closed?'🔓 Reopen chamber':'🔒 Close chamber'}</button>`:''}
       </h3>
+      ${reqs.length?`<div class="bk-list" style="margin-bottom:8px">
+        ${reqs.map(b=>`
+          <div class="bk-row" style="border-color:#ecd9a8;background:#fffaf0">
+            <span class="badge request">🙏 REQUEST</span>
+            <span class="name">${esc(b.guestName)}</span>
+            <span class="dates">${fmt(b.start)} → ${fmt(b.end)} · ${nightsBetween(b.start,b.end)}n</span>
+            <button class="btn sm" data-act="approveReq" data-arg="${b.id}">✅ Approve</button>
+            <button class="btn danger sm" data-act="denyReq" data-arg="${b.id}">❌ Deny</button>
+          </div>`).join('')}</div>`:''}
       <div class="bk-list">
         ${upcoming.length ? upcoming.map(b=>`
           <div class="bk-row">
             <span class="badge ${b.type}">${b.type==='guest'?'GUEST':'BLOCK'}</span>
             <span class="name">${esc(b.guestName)}</span>
             <span class="dates">${fmt(b.start)} → ${fmt(b.end)} · ${nightsBetween(b.start,b.end)}n</span>
+            ${b.type==='block'?`<button class="btn ghost sm" data-act="openUnblock" data-arg="${b.id}">✂️ Unblock</button>`:''}
             <button class="btn ghost sm" data-act="openEdit" data-arg="${b.id}">✏️ Edit</button>
             <button class="btn danger sm" data-act="unbook" data-arg="${b.id}">Release</button>
           </div>`).join('')
@@ -911,7 +1017,18 @@ const ACT = {
   pickDate(ds){
     if(!BK) return;
     if(ds<todayIso()) return;
-    const occ=occupiedSet(BK.roomId);
+    if(BK.mode==='unblock'){ // selection lives inside this block's window only
+      if(ds<BK.blockStart || ds>BK.blockEnd) return;
+      if(!BK.start || (BK.start && BK.end)){
+        if(ds<BK.blockEnd){ BK.start=ds; BK.end=null; }
+      }else{
+        if(ds<=BK.start){ if(ds<BK.blockEnd) BK.start=ds; }
+        else BK.end=ds;
+      }
+      redrawBookModal(); return;
+    }
+    const isReq = BK.mode==='request';
+    const occ=occupiedSet(BK.roomId, isReq);
     if(!BK.start || (BK.start && BK.end)){
       if(occ.has(ds)) return;
       BK.start=ds; BK.end=null;
@@ -919,7 +1036,7 @@ const ACT = {
       if(ds<=BK.start){
         if(occ.has(ds)) return;
         BK.start=ds;
-      }else if(rangeFree(BK.roomId,BK.start,ds)){
+      }else if(rangeFree(BK.roomId,BK.start,ds,isReq)){
         BK.end=ds;
       }else{
         toast('Someone already holds a night in that range — pick a shorter stay.', true);
@@ -968,6 +1085,78 @@ const ACT = {
     if(!r.ok){ done(); toast(r.error, true); return; }
     S.bookings.push({id:'tmp'+Date.now(), roomId, type:'block', guestName:note||'Blocked', start:s, end:e});
     closeModal(); render(); toast('Dates blocked. None shall pass. 🚫');
+    refresh(true);
+  },
+
+  toRequestMode(){ if(!BK) return; BK.mode='request'; BK.start=null; BK.end=null; redrawBookModal(); },
+  toBookMode(){ if(!BK) return; BK.mode='book'; BK.start=null; BK.end=null; redrawBookModal(); },
+  async doRequest(){
+    const name=document.getElementById('bk-name').value.trim();
+    if(!name){ toast('The royal ledger requires a name.', true); return; }
+    const email=(document.getElementById('bk-email')?.value||'').trim();
+    if(email && !email.includes('@')){ toast('That email looks off — fix it or leave it blank.', true); return; }
+    const rm=room(BK.roomId), s=BK.start, e=BK.end, n=nightsBetween(s,e);
+    const done=pending('🙏 Sending…');
+    const r=await api('requestBook', {roomId:rm.id, start:s, end:e, guestName:name, guestEmail:email});
+    if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    closeModal();
+    addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e, email, pending:true});
+    S.bookings.push({id:'tmp'+Date.now(), roomId:rm.id, type:'request', guestName:name, start:s, end:e});
+    if(ACCT && ACCT_STAYS && email.toLowerCase()===ACCT.email)
+      ACCT_STAYS.push({roomId:rm.id, guestName:name, start:s, end:e, code:r.code, pending:true});
+    render();
+    if(ACCT) loadAcctStays();
+    openModal(`<button class="x" data-act="closeModal">✕</button>
+      <h2>🙏 Thy request is with the Crown!</h2>
+      <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
+      <p style="font-size:14.5px">The Crown and the chamber&rsquo;s keeper have been alerted. ${email?`Word of their verdict flies to <b>${esc(email)}</b>.`:'Check back under &ldquo;My stays&rdquo; for the verdict.'}</p>
+      <div class="conf-code">${esc(r.code)}</div>
+      <p style="font-size:13px;color:var(--ink2)">This code tracks or withdraws the request — and becomes your booking code if approved.</p>
+      <div class="mrow"><button class="btn" data-act="closeModal">So be it</button></div>`);
+    refresh(true);
+  },
+  openUnblock(id){
+    const b=S.bookings.find(x=>x.id===id);
+    if(!b || b.type!=='block') return;
+    const anchor=b.start<todayIso()?todayIso():b.start;
+    const d0=fromIso(anchor);
+    UIS.calBase=new Date(d0.getFullYear(), d0.getMonth(), 1);
+    BK={roomId:b.roomId, mode:'unblock', bookingId:id, blockStart:b.start, blockEnd:b.end, start:null, end:null, name:b.guestName};
+    openModal(bookModalHTML());
+  },
+  async doUnblock(){
+    const roomId=BK.roomId, s=BK.start, e=BK.end;
+    const done=pending('✂️ Releasing…');
+    const r=await api('unblockRange',{pin:sess.pin, bookingId:BK.bookingId, start:s, end:e});
+    if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    carveLocalBlocks(roomId, s, e);
+    closeModal(); render(); toast('Dates released — the rest of the block stands. ✂️');
+    refresh(true);
+  },
+  async approveReq(id){
+    const b=S.bookings.find(x=>x.id===id);
+    const done=pending('✅…');
+    const r=await api('approveRequest',{pin:sess.pin, bookingId:id});
+    if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    if(b){ b.type='guest'; carveLocalBlocks(b.roomId, b.start, b.end); }
+    render(); toast('Approved — the guest is booked and the block parted around them. ✅');
+    refresh(true);
+  },
+  async denyReq(id){
+    if(!confirm('Deny this request? The guest will be told the dates remain unavailable.')) return;
+    const done=pending('❌…');
+    const r=await api('denyRequest',{pin:sess.pin, bookingId:id});
+    if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    S.bookings=S.bookings.filter(x=>x.id!==id);
+    render(); toast('Request denied. The raven departs with the sad news.');
     refresh(true);
   },
 
