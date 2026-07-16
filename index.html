@@ -155,7 +155,10 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 .tp-th{font-size:10px;text-align:center;color:var(--ink2);padding:2px 0 4px;font-weight:700;line-height:1.15}
 .tp-th span{display:block;font-size:8px;opacity:.65}
 .tp-th.wk{background:#f3eee1;border-radius:4px 4px 0 0}
-.tp-room{font-size:12.5px;font-weight:600;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--line);display:flex;align-items:center;gap:5px;height:36px}
+.tp-room{font-size:12.5px;font-weight:600;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--line);display:flex;align-items:center;gap:5px;height:36px;
+  position:sticky;left:0;background:var(--card);z-index:3;border-right:1.5px solid var(--line)}
+.tp-corner{position:sticky;left:0;background:var(--card);z-index:3;border-right:1.5px solid var(--line)}
+.tp-cell[data-act="calDayBook"]:hover::after{content:'+';position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--purple);font-weight:800;font-size:15px}
 .tp-cell{height:36px;border-top:1px solid var(--line);border-left:1px solid #f0ead9;position:relative}
 .tp-cell.wk{background:#faf6ec}
 .tp-cell.past{background:#f4efe3}
@@ -239,7 +242,7 @@ const SEED_ROOMS = [
 let S = {rooms:[], bookings:[]};          // shared state from backend
 let sess = null;                          // {pin, role:'admin'|'owner', name, rooms:[]}
 try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
-const UIS = {view:'guest', calBase:null, keeperTab:'list', kcalBase:null}; // calBase/kcalBase = Date, first of month shown
+const UIS = {view:'guest', calBase:null, kcalBase:null}; // calBase/kcalBase = Date, first of month shown
 let BK = null;                            // active booking modal {roomId, mode:'book'|'block'|'search', start, end}
 let SQ = {start:null, end:null};          // applied date-first search query
 const LS_ACCT = 'wes-castle-acct';
@@ -910,11 +913,12 @@ function keeperCalHTML(myRooms){
   const base=UIS.kcalBase, y=base.getFullYear(), m=base.getMonth();
   const dim=new Date(y,m+1,0).getDate(), today=todayIso();
   const mname=base.toLocaleDateString(undefined,{month:'long',year:'numeric'});
-  const cols=`grid-template-columns:118px repeat(${dim},minmax(30px,1fr))`;
-  let head=`<div class="tp-grid" style="${cols}"><div></div>`;
+  const cols=`grid-template-columns:152px repeat(${dim},minmax(30px,1fr))`;
+  const DOW=['Su','Mo','Tu','We','Th','Fr','Sa'];
+  let head=`<div class="tp-grid" style="${cols}"><div class="tp-corner"></div>`;
   for(let day=1;day<=dim;day++){
     const dt=new Date(y,m,day), ds=iso(dt), dow=dt.getDay();
-    head+=`<div class="tp-th ${dow===0||dow===6?'wk':''} ${ds===today?'tp-today':''}"><span>${'SMTWTFS'[dow]}</span>${day}</div>`;
+    head+=`<div class="tp-th ${dow===0||dow===6?'wk':''} ${ds===today?'tp-today':''}"><span>${DOW[dow]}</span>${day}</div>`;
   }
   head+='</div>';
   let rows='';
@@ -933,9 +937,11 @@ function keeperCalHTML(myRooms){
         const kind = items.some(x=>x.type==='request') ? 'request'
           : items.filter(x=>x.type==='guest').length>1 ? 'multi'
           : items[0].type;
-        const capL=(prime.start===ds)||day===1;
-        const capR=(addDays(ds,1)===prime.end)||day===dim;
-        const label=(prime.start===ds||day===1)?`<span class="tp-name">${items.length>1?items.length+'× ':''}${esc(prime.guestName)}</span>`:'';
+        // rounded caps only on true check-in/check-out days — a bar running flush
+        // to the month edge means the stay continues beyond it
+        const capL=prime.start===ds;
+        const capR=addDays(ds,1)===prime.end;
+        const label=(capL||day===1)?`<span class="tp-name">${!capL&&day===1?'… ':''}${esc(prime.guestName)}${items.length>1?' +'+(items.length-1):''}</span>`:'';
         const title=items.map(x=>`${x.type==='block'?'⛔':x.type==='request'?'🙏':'👤'} ${x.guestName}: ${fmt(x.start)} → ${fmt(x.end)}`).join('\n');
         cells+=`<div class="tp-cell has ${kind} ${capL?'capL':''} ${capR?'capR':''} ${ds===today?'tp-today':''}" title="${esc(title)}" data-act="openEdit" data-arg="${prime.id}">${label}</div>`;
       }
@@ -970,14 +976,12 @@ function keeperView(){
       ? 'rules the entire castle.'
       : 'commands ' + myRooms.map(r=>esc(r.name)).join(' & ') + '.'}${reqTotal
       ? ` · <b style="color:#ffd76e">🙏 ${reqTotal} request${reqTotal>1?'s':''} awaiting judgment</b>` : ''}</span>
-    <button class="btn ghost sm" style="border-color:rgba(255,255,255,.45);color:#fff" data-act="keeperTab" data-arg="${UIS.keeperTab==='cal'?'list':'cal'}">${UIS.keeperTab==='cal'?'📋 List view':'🗓️ Calendar view'}</button>
     <button class="btn gold sm" data-act="logout">Leave the keep</button>
   </div>`;
 
-  if(UIS.keeperTab==='cal'){
-    html += keeperCalHTML(myRooms);
-  }
-  else for(const r of myRooms){
+  html += keeperCalHTML(myRooms); // month tape chart up top, chamber lists below
+
+  for(const r of myRooms){
     const reqs = S.bookings
       .filter(b=>b.roomId===r.id && b.type==='request' && b.end>today)
       .sort((a,b)=>a.start<b.start?-1:1);
@@ -1419,7 +1423,6 @@ const ACT = {
     toast('Released. The chamber is free once more.');
     refresh(true);
   },
-  keeperTab(tab){ UIS.keeperTab=tab; render(); },
   kcalNav(dir){
     if(dir==='0'){ const n=new Date(); UIS.kcalBase=new Date(n.getFullYear(), n.getMonth(), 1); }
     else UIS.kcalBase=new Date(UIS.kcalBase.getFullYear(), UIS.kcalBase.getMonth()+Number(dir), 1);
