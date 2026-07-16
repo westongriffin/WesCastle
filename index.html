@@ -149,6 +149,30 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 .inline-form{display:flex;gap:8px;flex-wrap:wrap}
 .inline-form input{flex:1;min-width:120px;padding:8px 10px;border:1.5px solid var(--line);border-radius:8px;background:#fff}
 
+/* ---------- keeper tape chart ---------- */
+.tape{overflow-x:auto;padding-bottom:4px;margin-top:12px}
+.tp-grid{display:grid;min-width:880px}
+.tp-th{font-size:10px;text-align:center;color:var(--ink2);padding:2px 0 4px;font-weight:700;line-height:1.15}
+.tp-th span{display:block;font-size:8px;opacity:.65}
+.tp-th.wk{background:#f3eee1;border-radius:4px 4px 0 0}
+.tp-room{font-size:12.5px;font-weight:600;padding:0 8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-top:1px solid var(--line);display:flex;align-items:center;gap:5px;height:36px}
+.tp-cell{height:36px;border-top:1px solid var(--line);border-left:1px solid #f0ead9;position:relative}
+.tp-cell.wk{background:#faf6ec}
+.tp-cell.past{background:#f4efe3}
+.tp-cell[data-act="calDayBook"]{cursor:pointer}
+.tp-cell[data-act="calDayBook"]:hover{background:#ece5f8}
+.tp-cell.has{cursor:pointer;border-left-color:transparent}
+.tp-cell.guest{background:#cfe8d9}
+.tp-cell.multi{background:#a9d8bf}
+.tp-cell.block{background:#ddd3f0}
+.tp-cell.request{background:repeating-linear-gradient(45deg,#f7e8c3,#f7e8c3 4px,#fdf3dd 4px,#fdf3dd 8px)}
+.tp-cell.has:hover{filter:brightness(.94)}
+.tp-cell.capL{border-radius:9px 0 0 9px}
+.tp-cell.capR{border-radius:0 9px 9px 0}
+.tp-cell.capL.capR{border-radius:9px}
+.tp-cell.tp-today,.tp-th.tp-today{background-image:linear-gradient(rgba(201,162,39,.14),rgba(201,162,39,.14))}
+.tp-name{position:absolute;left:5px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;white-space:nowrap;z-index:2;color:var(--ink);text-shadow:0 1px 0 rgba(255,255,255,.65);pointer-events:none}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:12px 22px;border-radius:12px;font-size:14.5px;box-shadow:0 10px 30px rgba(0,0,0,.3);transition:transform .25s ease;z-index:200;max-width:92vw;text-align:center}
 #toast.show{transform:translateX(-50%) translateY(0)}
@@ -215,7 +239,7 @@ const SEED_ROOMS = [
 let S = {rooms:[], bookings:[]};          // shared state from backend
 let sess = null;                          // {pin, role:'admin'|'owner', name, rooms:[]}
 try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
-const UIS = {view:'guest', calBase:null}; // calBase = Date, first of month shown
+const UIS = {view:'guest', calBase:null, keeperTab:'list', kcalBase:null}; // calBase/kcalBase = Date, first of month shown
 let BK = null;                            // active booking modal {roomId, mode:'book'|'block'|'search', start, end}
 let SQ = {start:null, end:null};          // applied date-first search query
 const LS_ACCT = 'wes-castle-acct';
@@ -881,6 +905,61 @@ function redrawBookModal(){
 }
 
 /* ---------------- keeper view ---------------- */
+function keeperCalHTML(myRooms){
+  if(!UIS.kcalBase){ const n=new Date(); UIS.kcalBase=new Date(n.getFullYear(), n.getMonth(), 1); }
+  const base=UIS.kcalBase, y=base.getFullYear(), m=base.getMonth();
+  const dim=new Date(y,m+1,0).getDate(), today=todayIso();
+  const mname=base.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  const cols=`grid-template-columns:118px repeat(${dim},minmax(30px,1fr))`;
+  let head=`<div class="tp-grid" style="${cols}"><div></div>`;
+  for(let day=1;day<=dim;day++){
+    const dt=new Date(y,m,day), ds=iso(dt), dow=dt.getDay();
+    head+=`<div class="tp-th ${dow===0||dow===6?'wk':''} ${ds===today?'tp-today':''}"><span>${'SMTWTFS'[dow]}</span>${day}</div>`;
+  }
+  head+='</div>';
+  let rows='';
+  for(const r of myRooms){
+    let cells='';
+    for(let day=1;day<=dim;day++){
+      const dt=new Date(y,m,day), ds=iso(dt), dow=dt.getDay();
+      const items=S.bookings.filter(b=>b.roomId===r.id && b.start<=ds && ds<b.end);
+      const baseCls=`${dow===0||dow===6?'wk':''} ${ds===today?'tp-today':''}`;
+      if(!items.length){
+        const clickable = ds>=today && !r.closed;
+        cells+=`<div class="tp-cell ${baseCls} ${ds<today?'past':''}" ${clickable?`data-act="calDayBook" data-arg="${r.id}|${ds}"`:''}></div>`;
+      }else{
+        // requests take display priority (they need the keeper's eye), then stacked guests
+        const prime = items.find(x=>x.type==='request') || items[0];
+        const kind = items.some(x=>x.type==='request') ? 'request'
+          : items.filter(x=>x.type==='guest').length>1 ? 'multi'
+          : items[0].type;
+        const capL=(prime.start===ds)||day===1;
+        const capR=(addDays(ds,1)===prime.end)||day===dim;
+        const label=(prime.start===ds||day===1)?`<span class="tp-name">${items.length>1?items.length+'× ':''}${esc(prime.guestName)}</span>`:'';
+        const title=items.map(x=>`${x.type==='block'?'⛔':x.type==='request'?'🙏':'👤'} ${x.guestName}: ${fmt(x.start)} → ${fmt(x.end)}`).join('\n');
+        cells+=`<div class="tp-cell has ${kind} ${capL?'capL':''} ${capR?'capR':''} ${ds===today?'tp-today':''}" title="${esc(title)}" data-act="openEdit" data-arg="${prime.id}">${label}</div>`;
+      }
+    }
+    rows+=`<div class="tp-grid" style="${cols}">
+      <div class="tp-room">${r.emoji} <span>${esc(r.name)}</span>${r.closed?' 🔒':''}</div>${cells}</div>`;
+  }
+  return `<div class="kcard" style="margin-top:18px">
+    <h3>🗓️ ${mname}<span class="spacer"></span>
+      <button class="btn ghost sm" data-act="kcalNav" data-arg="-1">‹</button>
+      <button class="btn ghost sm" data-act="kcalNav" data-arg="0">Today</button>
+      <button class="btn ghost sm" data-act="kcalNav" data-arg="1">›</button>
+    </h3>
+    <div class="tape">${head}${rows}</div>
+    <div class="legend" style="justify-content:flex-start;margin-top:10px">
+      <span><i style="background:#cfe8d9"></i> Guest</span>
+      <span><i style="background:#a9d8bf"></i> Several guests</span>
+      <span><i style="background:#ddd3f0"></i> Block</span>
+      <span><i style="background:repeating-linear-gradient(45deg,#f7e8c3,#f7e8c3 4px,#fdf3dd 4px,#fdf3dd 8px)"></i> Request</span>
+      <span style="color:var(--ink2)">· Click a stay to edit — click an empty day to book</span>
+    </div>
+  </div>`;
+}
+
 function keeperView(){
   const myRooms = S.rooms.filter(r=> sess.role==='admin' || sess.rooms.includes(r.id));
   const today=todayIso();
@@ -891,10 +970,14 @@ function keeperView(){
       ? 'rules the entire castle.'
       : 'commands ' + myRooms.map(r=>esc(r.name)).join(' & ') + '.'}${reqTotal
       ? ` · <b style="color:#ffd76e">🙏 ${reqTotal} request${reqTotal>1?'s':''} awaiting judgment</b>` : ''}</span>
+    <button class="btn ghost sm" style="border-color:rgba(255,255,255,.45);color:#fff" data-act="keeperTab" data-arg="${UIS.keeperTab==='cal'?'list':'cal'}">${UIS.keeperTab==='cal'?'📋 List view':'🗓️ Calendar view'}</button>
     <button class="btn gold sm" data-act="logout">Leave the keep</button>
   </div>`;
 
-  for(const r of myRooms){
+  if(UIS.keeperTab==='cal'){
+    html += keeperCalHTML(myRooms);
+  }
+  else for(const r of myRooms){
     const reqs = S.bookings
       .filter(b=>b.roomId===r.id && b.type==='request' && b.end>today)
       .sort((a,b)=>a.start<b.start?-1:1);
@@ -1335,6 +1418,19 @@ const ACT = {
     render();
     toast('Released. The chamber is free once more.');
     refresh(true);
+  },
+  keeperTab(tab){ UIS.keeperTab=tab; render(); },
+  kcalNav(dir){
+    if(dir==='0'){ const n=new Date(); UIS.kcalBase=new Date(n.getFullYear(), n.getMonth(), 1); }
+    else UIS.kcalBase=new Date(UIS.kcalBase.getFullYear(), UIS.kcalBase.getMonth()+Number(dir), 1);
+    render();
+  },
+  calDayBook(arg){
+    const [roomId, ds]=arg.split('|');
+    const d0=fromIso(ds);
+    UIS.calBase=new Date(d0.getFullYear(), d0.getMonth(), 1);
+    BK={roomId, mode:'book', start:ds, end:null, name:'', email:''};
+    openModal(bookModalHTML());
   },
   openEdit(id){
     const b=S.bookings.find(x=>x.id===id);
