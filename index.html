@@ -176,6 +176,20 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 .tp-cell.tp-today,.tp-th.tp-today{background-image:linear-gradient(rgba(201,162,39,.14),rgba(201,162,39,.14))}
 .tp-name{position:absolute;left:5px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;white-space:nowrap;z-index:2;color:var(--ink);text-shadow:0 1px 0 rgba(255,255,255,.65);pointer-events:none}
 
+/* ---------- install banner ---------- */
+#install-bar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%) translateY(130%);
+  width:min(560px,calc(100vw - 24px));background:var(--purple-deep);color:#fff;border-radius:14px;
+  padding:12px 14px;display:flex;align-items:center;gap:12px;
+  box-shadow:0 12px 40px rgba(20,12,40,.45);z-index:150;transition:transform .35s ease}
+#install-bar.show{transform:translateX(-50%) translateY(0)}
+#install-bar .ib-icon{font-size:26px;line-height:1}
+#install-bar .ib-txt{flex:1;font-size:13px;line-height:1.4}
+#install-bar .ib-txt b{font-size:14px}
+#install-bar .ib-txt .ib-sub{color:#cfc3e8;display:block}
+#install-bar .ib-x{color:#cfc3e8;font-size:16px;padding:4px 7px;border-radius:8px}
+#install-bar .ib-x:hover{background:rgba(255,255,255,.12)}
+#install-bar svg{vertical-align:-3px}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:12px 22px;border-radius:12px;font-size:14.5px;box-shadow:0 10px 30px rgba(0,0,0,.3);transition:transform .25s ease;z-index:200;max-width:92vw;text-align:center}
 #toast.show{transform:translateX(-50%) translateY(0)}
@@ -1546,10 +1560,53 @@ document.addEventListener('click', e=>{
   if(fn){ ACT._el=el; fn.call(ACT, el.dataset.arg); }
 });
 
+/* ---------------- install banner ---------------- */
+const LS_INSTALL='wes-castle-install-dismissed';
+let deferredInstall=null;
+function isStandalone(){ return matchMedia('(display-mode: standalone)').matches || navigator.standalone===true; }
+function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1); }
+function installSnoozed(){ return Date.now() - (+localStorage.getItem(LS_INSTALL)||0) < 7*864e5; }
+function showInstallBar(){
+  if(isStandalone() || installSnoozed() || document.getElementById('install-bar')) return;
+  if(!/^https?:$/.test(location.protocol)) return;
+  const ios = isIOS() && !deferredInstall;
+  if(!deferredInstall && !ios) return; // browser offers no install path — stay quiet
+  const shareSvg='<svg width="13" height="16" viewBox="0 0 13 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 1v9M3.5 3.5L6.5 1l3 2.5M1.5 7.5v6a1 1 0 001 1h8a1 1 0 001-1v-6"/></svg>';
+  const bar=document.createElement('div');
+  bar.id='install-bar';
+  bar.innerHTML = ios
+    ? `<span class="ib-icon">🏰</span>
+       <div class="ib-txt"><b>Add Wes&rsquo;s Castle to thy home screen</b>
+       <span class="ib-sub">Tap <b>Share</b> ${shareSvg} below, then <b>&ldquo;Add to Home Screen&rdquo;</b></span></div>
+       <button class="ib-x" data-act="installDismiss">✕</button>`
+    : `<span class="ib-icon">🏰</span>
+       <div class="ib-txt"><b>Get the Wes&rsquo;s Castle app</b>
+       <span class="ib-sub">Free, instant, always the live calendar.</span></div>
+       <button class="btn gold sm" data-act="installGo">⬇️ Install</button>
+       <button class="ib-x" data-act="installDismiss">✕</button>`;
+  document.body.appendChild(bar);
+  requestAnimationFrame(()=>requestAnimationFrame(()=>bar.classList.add('show')));
+}
+function hideInstallBar(){ const b=document.getElementById('install-bar'); if(b){ b.classList.remove('show'); setTimeout(()=>b.remove(), 400); } }
+window.addEventListener('beforeinstallprompt', e=>{ e.preventDefault(); deferredInstall=e; showInstallBar(); });
+window.addEventListener('appinstalled', ()=>{ deferredInstall=null; hideInstallBar(); toast('The castle now lives on thy home screen! 🏰'); });
+ACT.installGo = async function(){
+  if(!deferredInstall) return;
+  deferredInstall.prompt();
+  const choice = await deferredInstall.userChoice.catch(()=>null);
+  deferredInstall=null; hideInstallBar();
+  if(choice && choice.outcome==='accepted') toast('Installing… look to thy home screen. 🏰');
+};
+ACT.installDismiss = function(){
+  localStorage.setItem(LS_INSTALL, String(Date.now()));
+  hideInstallBar();
+};
+
 /* ---------------- boot ---------------- */
 // PWA: register only over http(s) — double-clicking the file locally still works
 if('serviceWorker' in navigator && /^https?:$/.test(location.protocol))
   navigator.serviceWorker.register('sw.js').catch(()=>{});
+setTimeout(showInstallBar, 600); // iOS never fires beforeinstallprompt — show the pointer on load
 // instant first paint: last known ledger from cache, or placeholder cards —
 // the live ledger (5s+ round trip) hydrates in when it answers
 try{
