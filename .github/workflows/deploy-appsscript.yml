@@ -55,3 +55,5 @@ jobs:
           echo "PUSH_DONE"
           clasp deploy -i "$DEPLOY_ID" -d "Auto-deploy $(date -u +%FT%TZ)"
           echo "DEPLOY_DONE"
+
+# trigger: redeploy after CLASPRC_B64 refresh 2026-07-22T22:04:38Z
