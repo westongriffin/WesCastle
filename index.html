@@ -329,6 +329,7 @@ const Local = {
     const d=this.db();
     const pub = ()=>({ok:true,
       adminNotifySet:(d.adminNotify||'').includes('@'),
+      seam:{set:false, lockName:''},
       rooms:d.rooms.map(r=>({id:r.id,name:r.name,emoji:r.emoji,tag:r.tag,rate:r.rate,dark:!!r.dark,closed:!!r.closed,ownerName:r.ownerName||'',ownerNotifySet:(r.ownerNotify||'').includes('@'),capacity:r.capacity||1})),
       bookings:d.bookings.map(b=>({id:b.id,roomId:b.roomId,type:b.type,guestName:b.guestName,start:b.start,end:b.end}))});
     if(action==='state') return pub();
@@ -509,6 +510,9 @@ const Local = {
     if(action==='testNotify'){
       return {ok:false,error:'Demo mode has no messenger ravens — connect the royal ledger to send real notifications.'};
     }
+    if(action==='seamConnect'){
+      return {ok:false,error:'Demo mode has no locks — connect the royal ledger first.'};
+    }
     if(action==='toggleClosed'){
       const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
       r.closed=!r.closed; this.save(d); return {ok:true, closed:r.closed};
@@ -543,7 +547,7 @@ function adoptState(r){
   S = {rooms: r.rooms.map(rm=>{
     const m = SEED_ROOMS.find(x=>x.id===rm.id);
     return m ? {...rm, name:m.name, emoji:m.emoji, tag:m.tag, rate:m.rate, dark:!!m.dark} : rm;
-  }), bookings: r.bookings, adminNotifySet: !!r.adminNotifySet};
+  }), bookings: r.bookings, adminNotifySet: !!r.adminNotifySet, seam: r.seam||{set:false, lockName:''}};
 }
 // silent=true → background poll: never bother the user about a blip
 async function refresh(silent){
@@ -699,6 +703,7 @@ function manageHTML(){
     <h2>${r.emoji} ${esc(r.name)}</h2>
     <div class="sub">Reserved for <b>${esc(MG.guestName)}</b> · code ${esc(MG.code)} ${MG.pending?'<span class="badge request">⏳ AWAITING APPROVAL</span>':''}</div>
     <div class="sel-summary"><b>${fmtFull(MG.start)}</b> → <b>${fmtFull(MG.end)}</b> · ${n} night${n>1?'s':''}</div>
+    ${MG.doorCode?`<div class="sel-summary" style="margin-top:8px">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(MG.doorCode)}</b> (3pm check-in → 11am checkout)</div>`:''}
     <div class="mrow" style="justify-content:center;margin-top:16px">
       <button class="btn ghost" data-act="addIcs" data-arg="${esc(MG.code)}">📅 Apple / Outlook</button>
       <button class="btn ghost" data-act="addGcal" data-arg="${esc(MG.code)}">📆 Google Calendar</button>
@@ -1059,6 +1064,14 @@ function keeperView(){
           <div class="inline-form"><input id="admin-notify" placeholder="you@gmail.com, 5551234567@vtext.com">
           <button class="btn sm" data-act="saveAdminNotify">Save</button>
           <button class="btn ghost sm" data-act="testNotify">📨 Send test</button></div></div>
+        <div class="setting"><h4>Door lock 🔐 (Seam × Yale)</h4>
+          <p>${(S.seam&&S.seam.set)
+            ? `<b>Connected to ${esc(S.seam.lockName||'thy lock')}.</b> Every booking forges a door code for the stay window (3pm → 11am); cancellations revoke it, edits move it. Receipts land in the Log sheet.`
+            : `Not connected. Paste thy Seam API key and the castle will forge guest door codes automatically.`}</p>
+          ${(S.seam&&S.seam.set)
+            ? `<div class="inline-form"><button class="btn danger sm" data-act="seamDisconnect">Disconnect</button></div>`
+            : `<div class="inline-form"><input id="seam-key" type="password" placeholder="seam_…">
+               <button class="btn sm" data-act="seamConnect">🔗 Connect</button></div>`}</div>
         <div class="setting"><h4>Royal ledger (backend URL)</h4>
           <p>${apiUrl()?'Connected — all devices share the same calendar.':'Not connected — running in demo mode on this device. Paste your Apps Script web app URL to go live.'}</p>
           <div class="inline-form"><input id="api-url-in" placeholder="https://script.google.com/…/exec" value="${esc(localStorage.getItem(LS_API)||'')}">
@@ -1169,6 +1182,7 @@ const ACT = {
       <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
       <p style="font-size:14.5px">Guard this confirmation code — it manages your stay from any device. This device will also remember it for you.${email&&apiUrl()?` 📧 A copy is on its way to <b>${esc(email)}</b>.`:''}</p>
       <div class="conf-code">${esc(r.code)}</div>
+      ${r.doorCode?`<div class="sel-summary">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(r.doorCode)}</b> — works on the keypad from 3pm check-in until 11am checkout.</div>`:''}
       <div class="mrow" style="justify-content:center">
         <button class="btn ghost" data-act="addIcs" data-arg="${esc(r.code)}">📅 Apple / Outlook</button>
         <button class="btn ghost" data-act="addGcal" data-arg="${esc(r.code)}">📆 Google Calendar</button>
@@ -1543,6 +1557,44 @@ const ACT = {
       return;
     }
     toast('Test sent to '+r.sent+' — check thy inbox (or phone). 📨');
+  },
+  async seamConnect(deviceId){
+    const key=(document.getElementById('seam-key')?.value||window._seamKey||'').trim();
+    if(!key){ toast('Paste thy Seam API key first.', true); return; }
+    const done=pending('🔗 Connecting…');
+    const r=await api('seamConnect',{pin:sess.pin, key, deviceId: typeof deviceId==='string'&&deviceId.startsWith('dev:')?deviceId.slice(4):undefined});
+    done();
+    if(!r.ok){ toast(/Unknown decree/.test(r.error||'')
+      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      : r.error, true); return; }
+    if(r.choose){ // more than one lock — let the Crown pick
+      window._seamKey=key;
+      openModal(`<button class="x" data-act="closeModal">✕</button>
+        <h2>🔐 Which door shall guests open?</h2>
+        <div class="sub">Seam found ${r.choose.length} locks on thy account.</div>
+        <div class="bk-list">${r.choose.map(l=>`
+          <div class="bk-row"><span style="font-size:20px">🔐</span>
+            <span class="name">${esc(l.name)}</span>
+            <span class="dates">${l.online?'online':'offline — codes will queue'}</span>
+            <button class="btn sm" data-act="seamConnect" data-arg="dev:${esc(l.id)}">Choose</button>
+          </div>`).join('')}</div>`);
+      return;
+    }
+    window._seamKey=null;
+    closeModal();
+    S.seam={set:true, lockName:r.lockName||'Lock'};
+    render();
+    toast(`The castle now commands ${r.lockName}. Door codes flow automatically. 🔐`);
+    refresh(true);
+  },
+  async seamDisconnect(){
+    if(!confirm('Disconnect the door lock? Existing codes stay on the lock; new bookings will no longer get codes.')) return;
+    const done=pending('⏳…');
+    const r=await api('seamConnect',{pin:sess.pin, key:''});
+    done();
+    if(!r.ok){ toast(r.error, true); return; }
+    S.seam={set:false, lockName:''};
+    render(); toast('Lock disconnected. The castle returns to metal keys.');
   },
   saveApiUrl(){
     const u=document.getElementById('api-url-in').value.trim();
