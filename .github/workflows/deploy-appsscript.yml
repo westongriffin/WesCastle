@@ -17,7 +17,7 @@ jobs:
         with:
           node-version: '20'
       - name: Install clasp
-        run: npm install -g @google/clasp@3.3.0
+        run: npm install -g @google/clasp@2.4.2
       - name: Write clasp credentials (from base64 secret)
         env:
           CLASPRC_B64: ${{ secrets.CLASPRC_B64 }}
