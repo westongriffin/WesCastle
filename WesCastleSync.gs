@@ -318,6 +318,46 @@ function eLockHelp_(d) {
   return eP_('<b>Using the door lock:</b> enter your door code, then press <b>&#10003;</b>. Leaving? Just tap the circle Yale button at the top &mdash; no code needed.') +
     (s ? eBtn_(s + '/#lockhelp', '&#127916; Watch: how the door lock works') : '');
 }
+function hasAccount_(d, email) {
+  var em = String(email || '').trim().toLowerCase();
+  if (!em) return false;
+  return readAll_(d.ss.getSheetByName('Guests')).some(function (g) {
+    return String(g.email).toLowerCase() === em;
+  });
+}
+function gcalUrl_(roomNameStr, guestName, code, start, end) {
+  return 'https://calendar.google.com/calendar/render?action=TEMPLATE' +
+    '&text=' + encodeURIComponent('🏰 Wes’s Castle — ' + roomNameStr) +
+    '&dates=' + start.replace(/-/g, '') + '/' + end.replace(/-/g, '') +
+    '&details=' + encodeURIComponent('Guest: ' + guestName + '\nConfirmation code: ' + code);
+}
+function eCalRow_(roomNameStr, guestName, code, start, end) {
+  return '<div style="text-align:center;margin:14px 0;font-family:Arial,sans-serif;font-size:13.5px">' +
+    '<a href="' + gcalUrl_(roomNameStr, guestName, code, start, end) + '" style="color:#4c2a85;font-weight:bold">&#128198; Add to Google Calendar</a>' +
+    '<div style="color:#6b6078;font-size:12px;margin-top:3px">Apple or Outlook? Open the attached calendar invite.</div></div>';
+}
+function eKeyBtn_(d, email) {
+  var s = site_(d);
+  if (!s || hasAccount_(d, email)) return '';
+  return '<div style="border-top:1px solid #e6dcc6;margin-top:18px;padding-top:12px">' +
+    eP_('<b>Want all thy stays in one place?</b> Forge a castle key &mdash; a simple account that gathers every visit, past and future, on any device.') +
+    '<div style="text-align:center;margin:10px 0"><a href="' + s + '/#createkey" ' +
+    'style="background:#c9a227;color:#3d2e05;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;padding:11px 22px;border-radius:10px;display:inline-block">&#128273; Create a castle key</a></div></div>';
+}
+function icsEsc_(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/[,;]/g, function (m) { return '\\' + m; }).replace(/\n/g, '\\n');
+}
+function stayIcs_(roomNameStr, guestName, code, start, end) {
+  var ymd = function (s) { return s.replace(/-/g, ''); };
+  var stamp = Utilities.formatDate(new Date(), 'GMT', "yyyyMMdd'T'HHmmss'Z'");
+  var ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//Wes’s Castle//EN', 'BEGIN:VEVENT',
+    'UID:' + code + '@wes-castle', 'DTSTAMP:' + stamp,
+    'DTSTART;VALUE=DATE:' + ymd(start), 'DTEND;VALUE=DATE:' + ymd(end),
+    'SUMMARY:' + icsEsc_('🏰 Wes’s Castle — ' + roomNameStr),
+    'DESCRIPTION:' + icsEsc_('Guest: ' + guestName + '\nConfirmation code: ' + code),
+    'END:VEVENT', 'END:VCALENDAR'].join('\r\n');
+  return Utilities.newBlob(ics, 'text/calendar', 'WesCastle-' + code + '.ics');
+}
 
 /** Alert the Crown + the room's keeper. Addresses may be email or carrier
  *  SMS-gateway addresses (e.g. 5551234567@vtext.com) — kept short for texts.
@@ -337,11 +377,14 @@ function notify_(d, room, subject, body, room2) {
   });
 }
 
-function mailGuest_(d, addr, subject, body, html) {
+function mailGuest_(d, addr, subject, body, html, attachments) {
   var a = splitAddrs_(addr)[0];
   if (!a) return;
   try {
-    MailApp.sendEmail(a, subject, body, html ? {htmlBody: eWrap_(html)} : undefined);
+    var opts = {};
+    if (html) opts.htmlBody = eWrap_(html);
+    if (attachments && attachments.length) opts.attachments = attachments;
+    MailApp.sendEmail(a, subject, body, (opts.htmlBody || opts.attachments) ? opts : undefined);
     logNotify_(d, a, subject, 'sent (guest)');
   }
   catch (e) { logNotify_(d, a, subject, 'ERROR (guest): ' + e.message); }
@@ -484,8 +527,11 @@ function handle_(p) {
               ['Nights', String(nights_(p.start, p.end))]]) +
       eCode_('Confirmation code', code) +
       (doorPin ? eCode_('&#128272; Front door code', doorPin) + eLockHelp_(d) : '') +
+      eCalRow_(roomName_(room), String(p.guestName).trim(), code, p.start, p.end) +
       eManageBtn_(d) +
-      eP_('<span style="color:#6b6078;font-size:12.5px">Your confirmation code views, calendars, or cancels this stay on the castle site. Check-out is before the King starts vacuuming pointedly.</span>'));
+      eKeyBtn_(d, gEmail) +
+      eP_('<span style="color:#6b6078;font-size:12.5px">Your confirmation code views, calendars, or cancels this stay on the castle site. Check-out is before the King starts vacuuming pointedly.</span>'),
+      [stayIcs_(roomName_(room), String(p.guestName).trim(), code, p.start, p.end)]);
     return {ok: true, code: code, doorCode: doorPin || undefined};
   }
 
@@ -731,7 +777,10 @@ function handle_(p) {
               ['Check-out', fmtD_(apr.end) + ' — any time']]) +
       eCode_('Confirmation code', apr.code) +
       (aprPin ? eCode_('&#128272; Front door code', aprPin) + eLockHelp_(d) : '') +
-      eManageBtn_(d));
+      eCalRow_(roomName_(aprRoom), apr.guestName, apr.code, apr.start, apr.end) +
+      eManageBtn_(d) +
+      eKeyBtn_(d, apr.guestEmail),
+      [stayIcs_(roomName_(aprRoom), apr.guestName, apr.code, apr.start, apr.end)]);
     return {ok: true};
   }
 
@@ -791,7 +840,10 @@ function handle_(p) {
               ['Check-out', fmtD_(p.end) + ' — any time']]) +
       eCode_('Confirmation code (unchanged)', eb.code) +
       (String(eb.doorCode || '') ? eCode_('&#128272; Door code (follows new dates)', eb.doorCode) : '') +
-      eManageBtn_(d));
+      eCalRow_(roomName_(newRoom), newName, eb.code, p.start, p.end) +
+      eP_('<span style="color:#6b6078;font-size:12.5px">The attached calendar invite carries the new dates — adding it replaces the old entry.</span>') +
+      eManageBtn_(d),
+      [stayIcs_(roomName_(newRoom), newName, eb.code, p.start, p.end)]);
     return {ok: true};
   }
 
