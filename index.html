@@ -179,6 +179,8 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 /* ---------- door lock demo ("the short film") ---------- */
 .lockdemo{display:flex;gap:26px;align-items:center;justify-content:center;background:#241b33;border-radius:14px;padding:22px;margin:14px 0;flex-wrap:wrap}
 .ld-pad{display:grid;grid-template-columns:repeat(3,44px);gap:7px}
+.ld-yale{width:44px;height:44px;border-radius:50%;background:#3a2d55;color:#cfc3e8;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:800;letter-spacing:.5px;margin:0 auto 10px;border:2px solid #4d3d70;animation:ldYale 10s infinite}
+@keyframes ldYale{0%,76%,90%,100%{background:#3a2d55;color:#cfc3e8;transform:none}80%,84%{background:var(--gold);color:#241b33;transform:scale(.92)}}
 .ld-k{height:44px;border-radius:10px;background:#3a2d55;color:#cfc3e8;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;font-family:ui-monospace,Menlo,monospace}
 .ld-k.ok{background:#3a2d55;color:#7fd49b;font-size:20px}
 .ld-side{text-align:center;min-width:150px}
@@ -205,7 +207,7 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 .ld-cap .c1{animation:ldCap1 10s infinite}
 .ld-cap .c2{animation:ldCap2 10s infinite}
 .ld-cap .c3{animation:ldCap3 10s infinite}
-@media (prefers-reduced-motion:reduce){.ld-k,.ld-k.ok,.ld-lock .closed,.ld-lock .open,.ld-cap span{animation:none!important}.ld-cap .c1{opacity:1}.ld-lock .closed{opacity:1}}
+@media (prefers-reduced-motion:reduce){.ld-k,.ld-k.ok,.ld-yale,.ld-lock .closed,.ld-lock .open,.ld-cap span{animation:none!important}.ld-cap .c1{opacity:1}.ld-lock .closed{opacity:1}}
 .ld-steps{margin:12px 0 0;padding-left:20px;font-size:14px;line-height:1.7}
 
 /* ---------- install banner ---------- */
@@ -739,7 +741,7 @@ function manageHTML(){
     <h2>${r.emoji} ${esc(r.name)}</h2>
     <div class="sub">Reserved for <b>${esc(MG.guestName)}</b> · code ${esc(MG.code)} ${MG.pending?'<span class="badge request">⏳ AWAITING APPROVAL</span>':''}</div>
     <div class="sel-summary"><b>${fmtFull(MG.start)}</b> → <b>${fmtFull(MG.end)}</b> · ${n} night${n>1?'s':''}</div>
-    ${MG.doorCode?`<div class="sel-summary" style="margin-top:8px">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(MG.doorCode)}</b> (3pm check-in → 11am checkout)
+    ${MG.doorCode?`<div class="sel-summary" style="margin-top:8px">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(MG.doorCode)}</b> (works all day, check-in through checkout)
       <div style="margin-top:8px"><button class="btn ghost sm" data-act="lockHelp">🎬 How the door lock works</button></div></div>`:''}
     <div class="mrow" style="justify-content:center;margin-top:16px">
       <button class="btn ghost" data-act="addIcs" data-arg="${esc(MG.code)}">📅 Apple / Outlook</button>
@@ -1103,7 +1105,7 @@ function keeperView(){
           <button class="btn ghost sm" data-act="testNotify">📨 Send test</button></div></div>
         <div class="setting"><h4>Door lock 🔐 (Seam × Yale)</h4>
           <p>${(S.seam&&S.seam.set)
-            ? `<b>Connected to ${esc(S.seam.lockName||'thy lock')}.</b> Every booking forges a door code for the stay window (3pm → 11am); cancellations revoke it, edits move it. Receipts land in the Log sheet.`
+            ? `<b>Connected to ${esc(S.seam.lockName||'thy lock')}.</b> Every booking forges a door code valid all day from check-in day through checkout day; cancellations revoke it, edits move it. Receipts land in the Log sheet.`
             : `Not connected. Paste thy Seam API key and the castle will forge guest door codes automatically.`}</p>
           ${(S.seam&&S.seam.set)
             ? `<div class="inline-form"><button class="btn danger sm" data-act="seamDisconnect">Disconnect</button></div>`
@@ -1223,7 +1225,7 @@ const ACT = {
       <div class="sub">${esc(name)} · ${rm.emoji} ${esc(rm.name)} · ${fmtFull(s)} → ${fmtFull(e)} (${n} night${n>1?'s':''})</div>
       <p style="font-size:14.5px">Guard this confirmation code — it manages your stay from any device. This device will also remember it for you.${email&&apiUrl()?` 📧 A copy is on its way to <b>${esc(email)}</b>.`:''}</p>
       <div class="conf-code">${esc(r.code)}</div>
-      ${r.doorCode?`<div class="sel-summary">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(r.doorCode)}</b> — works on the keypad from 3pm check-in until 11am checkout.
+      ${r.doorCode?`<div class="sel-summary">🔐 Door code: <b style="font-size:18px;letter-spacing:2px">${esc(r.doorCode)}</b> — works on the keypad all day, from check-in day through checkout day.
         <div style="margin-top:8px"><button class="btn ghost sm" data-act="lockHelp">🎬 How the door lock works</button></div></div>`:''}
       <div class="mrow" style="justify-content:center">
         <button class="btn ghost" data-act="addIcs" data-arg="${esc(r.code)}">📅 Apple / Outlook</button>
@@ -1322,24 +1324,26 @@ const ACT = {
       <h2>🔐 How the door lock works</h2>
       <div class="sub">A ten-second tour of the front door keypad — it loops, watch it twice.</div>
       <div class="lockdemo">
-        <div class="ld-pad">
-          <div class="ld-k" data-seq="2">1</div><div class="ld-k" data-seq="4">2</div><div class="ld-k">3</div>
-          <div class="ld-k" data-seq="1">4</div><div class="ld-k">5</div><div class="ld-k" data-seq="6">6</div>
-          <div class="ld-k">7</div><div class="ld-k" data-seq="3">8</div><div class="ld-k" data-seq="5">9</div>
-          <div class="ld-k">*</div><div class="ld-k">0</div><div class="ld-k ok">✓</div>
+        <div>
+          <div class="ld-yale">YALE</div>
+          <div class="ld-pad">
+            <div class="ld-k" data-seq="2">1</div><div class="ld-k" data-seq="4">2</div><div class="ld-k">3</div>
+            <div class="ld-k" data-seq="1">4</div><div class="ld-k">5</div><div class="ld-k" data-seq="6">6</div>
+            <div class="ld-k">7</div><div class="ld-k" data-seq="3">8</div><div class="ld-k" data-seq="5">9</div>
+            <div class="ld-k">*</div><div class="ld-k">0</div><div class="ld-k ok">✓</div>
+          </div>
         </div>
         <div class="ld-side">
           <div class="ld-lockwrap ld-lock"><span class="closed">🔒</span><span class="open">🔓</span></div>
-          <div class="ld-cap"><span class="c1">Enter thy 6-digit door code…</span><span class="c2">…press ✓ — the bolt slides open!</span><span class="c3">Leaving? Just tap ✓ to lock.</span></div>
+          <div class="ld-cap"><span class="c1">Enter thy 6-digit door code…</span><span class="c2">…press ✓ — the bolt slides open!</span><span class="c3">Leaving? Tap the circle Yale button up top.</span></div>
         </div>
       </div>
       <ol class="ld-steps">
-        <li>Tap the keypad to wake it.</li>
         <li>Enter the <b>6-digit door code</b> from thy confirmation.</li>
         <li>Press <b>✓</b> — the door unlocks.</li>
-        <li>Leaving? Just tap <b>✓</b> — no code needed to lock.</li>
+        <li>Leaving? Just tap the <b>circle Yale button at the top</b> — no code needed.</li>
       </ol>
-      <p style="font-size:12.5px;color:var(--ink2);margin-top:10px">Thy code works from 3pm on check-in day until 11am on checkout day. It is thine alone — the castle forges a fresh one for every stay.</p>
+      <p style="font-size:12.5px;color:var(--ink2);margin-top:10px">Thy code works all day on both thy check-in and checkout days — arrive and depart whenever suits thee. It is thine alone; the castle forges a fresh one for every stay.</p>
       <div class="mrow"><button class="btn" data-act="closeModal">Got it</button></div>`);
   },
 
