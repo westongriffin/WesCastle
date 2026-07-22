@@ -27,7 +27,7 @@ var SEED_ROOMS = [
 ];
 
 var ROOM_HEAD    = ['id','name','emoji','tag','rate','flags','closed','ownerName','ownerPin','ownerNotify','capacity'];
-var BOOKING_HEAD = ['id','roomId','type','guestName','start','end','code','createdBy','createdAt','guestEmail'];
+var BOOKING_HEAD = ['id','roomId','type','guestName','start','end','code','createdBy','createdAt','guestEmail','lockCodeId','doorCode'];
 
 /**
  * RUN ME ONCE after pasting a new version: pick "authorizeCastle" in the
@@ -38,7 +38,8 @@ var BOOKING_HEAD = ['id','roomId','type','guestName','start','end','code','creat
 function authorizeCastle() {
   var quota = MailApp.getRemainingDailyQuota(); // touches the mail permission
   var ss = ss_();                               // touches Drive/Sheets
-  Logger.log('✅ Authorized. Ledger: "' + ss.getName() + '". Email quota left today: ' + quota);
+  var net = UrlFetchApp.fetch('https://connect.getseam.com/health', {muteHttpExceptions: true}).getResponseCode(); // touches external requests
+  Logger.log('✅ Authorized. Ledger: "' + ss.getName() + '". Email quota left today: ' + quota + '. External reach (Seam): HTTP ' + net + '.');
 }
 
 /**
@@ -189,6 +190,83 @@ function makeToken_(d, email) { // signed-in device stays valid 180 days
   return tok;
 }
 
+function setSetting_(d, key, val) {
+  var sh = d.ss.getSheetByName('Settings');
+  var row = readAll_(sh).filter(function (s) { return s.key === key; })[0];
+  if (row) sh.getRange(row._row, 2).setValue(val);
+  else sh.appendRow([key, val]);
+}
+
+/* ---------------- Yale door codes via Seam ---------------- */
+
+var SEAM_API = 'https://connect.getseam.com';
+var CHECKIN_HOUR = 15, CHECKOUT_HOUR = 11; // door code validity window (script timezone)
+
+function seamCfg_(d) {
+  var key = String(d.settings.seamKey || ''), dev = String(d.settings.seamDeviceId || '');
+  return key && dev ? {key: key, dev: dev} : null;
+}
+
+function seamFetch_(d, path, payload, keyOverride) {
+  var key = keyOverride || String(d.settings.seamKey || '');
+  var res = UrlFetchApp.fetch(SEAM_API + path, {
+    method: 'post', contentType: 'application/json',
+    headers: {Authorization: 'Bearer ' + key},
+    payload: JSON.stringify(payload || {}), muteHttpExceptions: true
+  });
+  var body = {};
+  try { body = JSON.parse(res.getContentText()); } catch (e) {}
+  body._status = res.getResponseCode();
+  return body;
+}
+
+function isoAt_(dateStr, hour) {
+  var p = dateStr.split('-').map(Number);
+  return new Date(p[0], p[1] - 1, p[2], hour, 0, 0).toISOString();
+}
+
+/** Programs a stay-window door code on the lock. Never throws — a lock hiccup
+ *  must not break a booking. Returns the pin, or null. */
+function createLockCode_(d, b) {
+  var cfg = seamCfg_(d); if (!cfg) return null;
+  try {
+    var pin = String(Math.floor(100000 + Math.random() * 900000));
+    var res = seamFetch_(d, '/access_codes/create', {
+      device_id: cfg.dev,
+      name: ('WC ' + b.code + ' ' + b.guestName).slice(0, 60),
+      code: pin,
+      starts_at: isoAt_(b.start, CHECKIN_HOUR),
+      ends_at: isoAt_(b.end, CHECKOUT_HOUR)
+    });
+    if (res.access_code) {
+      var sh = d.ss.getSheetByName('Bookings');
+      sh.getRange(b._row, BOOKING_HEAD.indexOf('lockCodeId') + 1).setValue(res.access_code.access_code_id);
+      sh.getRange(b._row, BOOKING_HEAD.indexOf('doorCode') + 1).setValue(pin);
+      logNotify_(d, 'lock', 'door code for ' + b.code, 'created — active ' + b.start + ' 3pm → ' + b.end + ' 11am');
+      return pin;
+    }
+    logNotify_(d, 'lock', 'door code for ' + b.code, 'ERROR: ' + ((res.error && res.error.message) || ('HTTP ' + res._status)));
+  } catch (e) { logNotify_(d, 'lock', 'door code for ' + b.code, 'ERROR: ' + e.message); }
+  return null;
+}
+
+function deleteLockCode_(d, b) {
+  if (!seamCfg_(d) || !String(b.lockCodeId || '')) return;
+  try {
+    seamFetch_(d, '/access_codes/delete', {access_code_id: String(b.lockCodeId)});
+    logNotify_(d, 'lock', 'door code for ' + b.code, 'revoked');
+  } catch (e) { logNotify_(d, 'lock', 'door code for ' + b.code, 'ERROR revoking: ' + e.message); }
+}
+
+function updateLockCode_(d, b, start, end) {
+  if (!seamCfg_(d) || !String(b.lockCodeId || '')) return;
+  try {
+    seamFetch_(d, '/access_codes/update', {access_code_id: String(b.lockCodeId),
+      starts_at: isoAt_(start, CHECKIN_HOUR), ends_at: isoAt_(end, CHECKOUT_HOUR)});
+    logNotify_(d, 'lock', 'door code for ' + b.code, 'window moved to ' + start + ' → ' + end);
+  } catch (e) { logNotify_(d, 'lock', 'door code for ' + b.code, 'ERROR moving: ' + e.message); }
+}
+
 /** Pretty room name straight from SEED_ROOMS (immune to a garbled sheet). */
 function roomName_(room) {
   if (!room) return 'a chamber';
@@ -255,9 +333,9 @@ function carveBlocks_(d, roomId, start, end) {
   blocks.forEach(function (b) {
     sh.deleteRow(b._row);
     if (b.start < start) sh.appendRow(['b' + new Date().getTime() + 'a' + Math.floor(Math.random() * 1000),
-      roomId, 'block', b.guestName, b.start, start, '', b.createdBy, today_(), '']);
+      roomId, 'block', b.guestName, b.start, start, '', b.createdBy, today_(), '', '', '']);
     if (end < b.end) sh.appendRow(['b' + new Date().getTime() + 'b' + Math.floor(Math.random() * 1000),
-      roomId, 'block', b.guestName, end, b.end, '', b.createdBy, today_(), '']);
+      roomId, 'block', b.guestName, end, b.end, '', b.createdBy, today_(), '', '', '']);
   });
   return blocks.length;
 }
@@ -292,6 +370,7 @@ function publicState_(d) {
   return {
     ok: true,
     adminNotifySet: splitAddrs_(d.settings.adminNotify).length > 0,
+    seam: {set: !!seamCfg_(d), lockName: String(d.settings.seamLockName || '')},
     rooms: d.rooms.map(function (r) {
       return {id: r.id, name: r.name, emoji: r.emoji, tag: r.tag, rate: r.rate,
               dark: String(r.flags).indexOf('dark') >= 0, closed: r.closed, ownerName: r.ownerName,
@@ -336,24 +415,30 @@ function handle_(p) {
       (Number(room.capacity) || 1) > 1 ? 'The chamber is full for part of that range.' : 'Alas — someone claimed those nights first.'};
     var code = 'WC-' + Utilities.getUuid().replace(/-/g, '').slice(0, 4).toUpperCase();
     var gEmail = String(p.guestEmail || '').trim();
-    d.ss.getSheetByName('Bookings').appendRow(
+    var shBk = d.ss.getSheetByName('Bookings');
+    shBk.appendRow(
       ['b' + new Date().getTime(), p.roomId, 'guest', String(p.guestName).trim(),
-       p.start, p.end, code, 'guest', today_(), gEmail]);
+       p.start, p.end, code, 'guest', today_(), gEmail, '', '']);
+    var doorPin = createLockCode_(d, {_row: shBk.getLastRow(), code: code,
+      guestName: String(p.guestName).trim(), start: p.start, end: p.end});
     var when = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
     notify_(d, room, '🏰 New booking: ' + roomName_(room),
-      String(p.guestName).trim() + ' booked ' + roomName_(room) + ', ' + when + '. Code ' + code + '.');
+      String(p.guestName).trim() + ' booked ' + roomName_(room) + ', ' + when + '. Code ' + code + '.' +
+      (doorPin ? ' Door code ' + doorPin + '.' : ''));
     mailGuest_(d, gEmail, "🏰 You're booked at Wes's Castle",
       'Your chamber is secured!\n\n' + roomName_(room) + '\n' + fmtD_(p.start) + ' → ' + fmtD_(p.end) +
       ' (' + nights_(p.start, p.end) + ' nights)\n\nConfirmation code: ' + code +
-      '\n\nUse this code on the castle site to view, add to calendar, or cancel your stay.' +
+      (doorPin ? '\n🔐 Door code: ' + doorPin + ' — works on the keypad from 3pm check-in until 11am checkout.' : '') +
+      '\n\nUse your confirmation code on the castle site to view, add to calendar, or cancel your stay.' +
       '\nCheck-out is before the King starts vacuuming pointedly.');
-    return {ok: true, code: code};
+    return {ok: true, code: code, doorCode: doorPin || undefined};
   }
 
   if (action === 'cancelByCode') {
     var code2 = String(p.code || '').trim().toUpperCase();
     var hit = d.bookings.filter(function (b) { return b.code && b.code.toUpperCase() === code2; })[0];
     if (!hit) return {ok: false, error: 'No reservation bears that code.'};
+    deleteLockCode_(d, hit);
     d.ss.getSheetByName('Bookings').deleteRow(hit._row);
     var cRoom = d.rooms.filter(function (r) { return r.id === hit.roomId; })[0];
     var cWhen = fmtD_(hit.start) + ' → ' + fmtD_(hit.end);
@@ -370,7 +455,8 @@ function handle_(p) {
     var hit2 = d.bookings.filter(function (b) { return b.code && b.code.toUpperCase() === code3; })[0];
     if (!hit2) return {ok: false, error: 'No reservation bears that code.'};
     return {ok: true, booking: {roomId: hit2.roomId, guestName: hit2.guestName,
-      start: hit2.start, end: hit2.end, code: hit2.code, pending: hit2.type === 'request'}};
+      start: hit2.start, end: hit2.end, code: hit2.code, pending: hit2.type === 'request',
+      doorCode: String(hit2.doorCode || '') || undefined}};
   }
 
   if (action === 'requestBook') {
@@ -386,7 +472,7 @@ function handle_(p) {
     var rqEmail = String(p.guestEmail || '').trim();
     d.ss.getSheetByName('Bookings').appendRow(
       ['b' + new Date().getTime(), p.roomId, 'request', String(p.guestName).trim(),
-       p.start, p.end, rqCode, 'guest', today_(), rqEmail]);
+       p.start, p.end, rqCode, 'guest', today_(), rqEmail, '', '']);
     var rqWhen = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
     notify_(d, rqRoom, '🙏 Request: ' + roomName_(rqRoom),
       String(p.guestName).trim() + ' asks for ' + rqWhen + ' (currently blocked). ' +
@@ -486,7 +572,7 @@ function handle_(p) {
       return (b.type === 'guest' || b.type === 'request') && String(b.guestEmail || '').toLowerCase() === em;
     }).map(function (b) {
       return {roomId: b.roomId, guestName: b.guestName, start: b.start, end: b.end, code: b.code,
-              pending: b.type === 'request'};
+              pending: b.type === 'request', doorCode: String(b.doorCode || '') || undefined};
     });
     return {ok: true, email: em, stays: mine};
   }
@@ -502,7 +588,7 @@ function handle_(p) {
     if (overlap_(d, p.roomId, p.start, p.end)) return {ok: false, error: 'Those dates already have a booking or block. Release it first.'};
     d.ss.getSheetByName('Bookings').appendRow(
       ['b' + new Date().getTime(), p.roomId, 'block', String(p.note || '').trim() || 'Blocked',
-       p.start, p.end, '', a.role, today_(), '']);
+       p.start, p.end, '', a.role, today_(), '', '', '']);
     var bRoom = d.rooms.filter(function (r) { return r.id === p.roomId; })[0];
     notify_(d, bRoom, '🏰 Dates blocked: ' + roomName_(bRoom),
       fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' blocked by ' + a.name +
@@ -514,6 +600,7 @@ function handle_(p) {
     var b2 = d.bookings.filter(function (b) { return b.id === String(p.bookingId); })[0];
     if (!b2) return {ok: false, error: 'Reservation not found.'};
     if (!canRoom(b2.roomId)) return {ok: false, error: 'That chamber is not yours to command.'};
+    deleteLockCode_(d, b2);
     d.ss.getSheetByName('Bookings').deleteRow(b2._row);
     var uRoom = d.rooms.filter(function (r) { return r.id === b2.roomId; })[0];
     var uWhen = fmtD_(b2.start) + ' → ' + fmtD_(b2.end);
@@ -548,14 +635,18 @@ function handle_(p) {
     var aprRoom = d.rooms.filter(function (r) { return r.id === apr.roomId; })[0];
     if (bookingConflict_(d, aprRoom, apr.start, apr.end, apr.id, true))
       return {ok: false, error: 'Other guests now hold those nights — the request cannot be approved as-is.'};
-    // convert first (no row indices move), then carve the blocks it sits on
+    // convert + program the door BEFORE carving (deletes above would shift this row)
     d.ss.getSheetByName('Bookings').getRange(apr._row, BOOKING_HEAD.indexOf('type') + 1).setValue('guest');
+    var aprPin = createLockCode_(d, {_row: apr._row, code: apr.code,
+      guestName: apr.guestName, start: apr.start, end: apr.end});
     carveBlocks_(d, apr.roomId, apr.start, apr.end);
     var aprWhen = fmtD_(apr.start) + ' → ' + fmtD_(apr.end) + ' (' + nights_(apr.start, apr.end) + 'n)';
     notify_(d, aprRoom, '✅ Approved: ' + roomName_(aprRoom),
-      apr.guestName + ' is now booked ' + aprWhen + ' (request approved by ' + a.name + ').');
+      apr.guestName + ' is now booked ' + aprWhen + ' (request approved by ' + a.name + ').' +
+      (aprPin ? ' Door code ' + aprPin + '.' : ''));
     mailGuest_(d, apr.guestEmail, "🏰 Thy request is GRANTED",
       'Rejoice! The castle approved your stay:\n\n' + roomName_(aprRoom) + '\n' + aprWhen +
+      (aprPin ? '\n🔐 Door code: ' + aprPin + ' — works on the keypad from 3pm check-in until 11am checkout.' : '') +
       '\n\nYour confirmation code is unchanged: ' + apr.code);
     return {ok: true};
   }
@@ -592,6 +683,7 @@ function handle_(p) {
     shE.getRange(eb._row, BOOKING_HEAD.indexOf('guestName') + 1).setValue(newName);
     shE.getRange(eb._row, BOOKING_HEAD.indexOf('start') + 1).setValue(p.start);
     shE.getRange(eb._row, BOOKING_HEAD.indexOf('end') + 1).setValue(p.end);
+    updateLockCode_(d, eb, p.start, p.end);
     var oldRoomE = d.rooms.filter(function (r) { return r.id === eb.roomId; })[0];
     var movedE = newRoom.id !== eb.roomId;
     var whenE = fmtD_(p.start) + ' → ' + fmtD_(p.end) + ' (' + nights_(p.start, p.end) + 'n)';
@@ -601,6 +693,7 @@ function handle_(p) {
       movedE ? oldRoomE : null);
     mailGuest_(d, eb.guestEmail, "🏰 Thy Wes's Castle stay was updated",
       'The castle updated your reservation:\n\n' + roomName_(newRoom) + '\n' + whenE +
+      (String(eb.doorCode || '') ? '\n🔐 Your door code ' + eb.doorCode + ' now follows the new dates.' : '') +
       '\n\nYour confirmation code is unchanged: ' + eb.code);
     return {ok: true};
   }
@@ -635,6 +728,31 @@ function handle_(p) {
       return {ok: false, error: 'Google blocked the send (' + e.message + '). Fix: open the Apps Script editor, ' +
         'pick "authorizeCastle" in the toolbar dropdown, press Run, and approve the permission dialog.'};
     }
+  }
+
+  if (action === 'seamConnect') {
+    var sKey = String(p.key || '').trim();
+    if (!sKey) { // disconnect
+      setSetting_(d, 'seamKey', ''); setSetting_(d, 'seamDeviceId', ''); setSetting_(d, 'seamLockName', '');
+      return {ok: true, disconnected: true};
+    }
+    var devRes = seamFetch_(d, '/devices/list', {}, sKey);
+    var locks = (devRes.devices || []).filter(function (x) { return x.can_program_online_access_codes; });
+    if (!locks.length) return {ok: false, error: 'Seam answered, but no code-capable locks were found (' +
+      ((devRes.error && devRes.error.message) || 'check the API key') + ').'};
+    var pick = p.deviceId ? locks.filter(function (x) { return x.device_id === p.deviceId; })[0] : null;
+    if (!pick && locks.length > 1)
+      return {ok: true, choose: locks.map(function (x) {
+        return {id: x.device_id, name: (x.properties || {}).name || x.device_type,
+                online: !!(x.properties || {}).online};
+      })};
+    pick = pick || locks[0];
+    var pickName = (pick.properties || {}).name || 'Lock';
+    setSetting_(d, 'seamKey', sKey);
+    setSetting_(d, 'seamDeviceId', pick.device_id);
+    setSetting_(d, 'seamLockName', pickName);
+    logNotify_(d, 'lock', 'Seam connected', pickName + ' (' + pick.device_id.slice(0, 8) + '…)');
+    return {ok: true, lockName: pickName};
   }
 
   if (action === 'setAdminNotify') {
