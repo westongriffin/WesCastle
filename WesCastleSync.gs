@@ -200,7 +200,9 @@ function setSetting_(d, key, val) {
 /* ---------------- Yale door codes via Seam ---------------- */
 
 var SEAM_API = 'https://connect.getseam.com';
-var CHECKIN_HOUR = 15, CHECKOUT_HOUR = 11; // door code validity window (script timezone)
+// Door codes cover the WHOLE stay: midnight at the start of check-in day
+// through midnight at the END of checkout day (hour 24 rolls to next 00:00).
+var CHECKIN_HOUR = 0, CHECKOUT_HOUR = 24;
 
 function seamCfg_(d) {
   var key = String(d.settings.seamKey || ''), dev = String(d.settings.seamDeviceId || '');
@@ -242,7 +244,7 @@ function createLockCode_(d, b) {
       var sh = d.ss.getSheetByName('Bookings');
       sh.getRange(b._row, BOOKING_HEAD.indexOf('lockCodeId') + 1).setValue(res.access_code.access_code_id);
       sh.getRange(b._row, BOOKING_HEAD.indexOf('doorCode') + 1).setValue(pin);
-      logNotify_(d, 'lock', 'door code for ' + b.code, 'created — active ' + b.start + ' 3pm → ' + b.end + ' 11am');
+      logNotify_(d, 'lock', 'door code for ' + b.code, 'created — active all day ' + b.start + ' through ' + b.end);
       return pin;
     }
     logNotify_(d, 'lock', 'door code for ' + b.code, 'ERROR: ' + ((res.error && res.error.message) || ('HTTP ' + res._status)));
@@ -278,6 +280,45 @@ function logNotify_(d, to, subject, result) {
   try { d.ss.getSheetByName('Log').appendRow([new Date(), to, subject, result]); } catch (e) {}
 }
 
+/* ---------------- pretty guest emails (castle stationery) ----------------
+   Guests get branded HTML mail; notify_ / testNotify stay PLAIN text on
+   purpose — keeper addresses may be SMS gateways that choke on HTML. */
+function eWrap_(inner) {
+  return '<div style="background:#f6f1e6;padding:26px 12px;margin:0">' +
+    '<div style="max-width:520px;margin:0 auto;background:#fffdf7;border:1px solid #e6dcc6;border-radius:16px;overflow:hidden;font-family:Georgia,\'Times New Roman\',serif;color:#2b2338">' +
+    '<div style="background:#38206b;padding:20px;text-align:center">' +
+    '<div style="font-size:34px;line-height:1.2">&#127984;</div>' +
+    '<div style="color:#f3e8c9;font-size:21px;font-weight:bold;letter-spacing:.5px">Wes&#8217;s Castle</div></div>' +
+    '<div style="padding:22px 26px 10px">' + inner + '</div>' +
+    '<div style="background:#f6f1e6;padding:13px;text-align:center;font-size:11.5px;color:#6b6078;font-style:italic">No gold changes hands &mdash; payment is accepted in compliments, favors, and doing your own dishes.</div>' +
+    '</div></div>';
+}
+function eH_(t) { return '<div style="font-size:20px;font-weight:bold;color:#38206b;margin:0 0 8px">' + t + '</div>'; }
+function eP_(t) { return '<p style="font-size:14px;line-height:1.6;margin:10px 0;color:#2b2338">' + t + '</p>'; }
+function eRows_(pairs) {
+  var tr = pairs.map(function (p) {
+    return '<tr><td style="padding:7px 12px;color:#6b6078;font-size:12.5px;white-space:nowrap;vertical-align:top;font-family:Arial,sans-serif">' + p[0] + '</td>' +
+           '<td style="padding:7px 12px;font-size:14px;font-weight:bold">' + p[1] + '</td></tr>';
+  }).join('');
+  return '<table cellpadding="0" cellspacing="0" style="border-collapse:collapse;background:#faf6ec;border-radius:10px;width:100%;margin:12px 0">' + tr + '</table>';
+}
+function eCode_(label, code) {
+  return '<div style="border:2px dashed #c9a227;background:#f3e8c9;border-radius:12px;padding:12px;text-align:center;margin:14px 0">' +
+    '<div style="font-size:10.5px;letter-spacing:1.5px;color:#6d5410;text-transform:uppercase;font-family:Arial,sans-serif">' + label + '</div>' +
+    '<div style="font-family:Menlo,Consolas,monospace;font-size:26px;font-weight:bold;letter-spacing:4px;color:#38206b;margin-top:2px">' + code + '</div></div>';
+}
+function eBtn_(url, label) {
+  return '<div style="text-align:center;margin:16px 0"><a href="' + url + '" ' +
+    'style="background:#4c2a85;color:#ffffff;text-decoration:none;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;padding:11px 22px;border-radius:10px;display:inline-block">' + label + '</a></div>';
+}
+function site_(d) { return String(d.settings.siteUrl || '').replace(/\/+$/, ''); }
+function eManageBtn_(d) { var s = site_(d); return s ? eBtn_(s, '&#127984; Manage thy stay') : ''; }
+function eLockHelp_(d) {
+  var s = site_(d);
+  return eP_('<b>Using the door lock:</b> enter your door code, then press <b>&#10003;</b>. Leaving? Just tap the circle Yale button at the top &mdash; no code needed.') +
+    (s ? eBtn_(s + '/#lockhelp', '&#127916; Watch: how the door lock works') : '');
+}
+
 /** Alert the Crown + the room's keeper. Addresses may be email or carrier
  *  SMS-gateway addresses (e.g. 5551234567@vtext.com) — kept short for texts.
  *  Every attempt is receipted in the Log sheet. */
@@ -296,10 +337,13 @@ function notify_(d, room, subject, body, room2) {
   });
 }
 
-function mailGuest_(d, addr, subject, body) {
+function mailGuest_(d, addr, subject, body, html) {
   var a = splitAddrs_(addr)[0];
   if (!a) return;
-  try { MailApp.sendEmail(a, subject, body); logNotify_(d, a, subject, 'sent (guest)'); }
+  try {
+    MailApp.sendEmail(a, subject, body, html ? {htmlBody: eWrap_(html)} : undefined);
+    logNotify_(d, a, subject, 'sent (guest)');
+  }
   catch (e) { logNotify_(d, a, subject, 'ERROR (guest): ' + e.message); }
 }
 
@@ -371,6 +415,7 @@ function publicState_(d) {
     ok: true,
     adminNotifySet: splitAddrs_(d.settings.adminNotify).length > 0,
     seam: {set: !!seamCfg_(d), lockName: String(d.settings.seamLockName || '')},
+    siteUrl: String(d.settings.siteUrl || ''),
     rooms: d.rooms.map(function (r) {
       return {id: r.id, name: r.name, emoji: r.emoji, tag: r.tag, rate: r.rate,
               dark: String(r.flags).indexOf('dark') >= 0, closed: r.closed, ownerName: r.ownerName,
@@ -428,9 +473,19 @@ function handle_(p) {
     mailGuest_(d, gEmail, "🏰 You're booked at Wes's Castle",
       'Your chamber is secured!\n\n' + roomName_(room) + '\n' + fmtD_(p.start) + ' → ' + fmtD_(p.end) +
       ' (' + nights_(p.start, p.end) + ' nights)\n\nConfirmation code: ' + code +
-      (doorPin ? '\n🔐 Door code: ' + doorPin + ' — works on the keypad from 3pm check-in until 11am checkout.' : '') +
+      (doorPin ? '\n🔐 Door code: ' + doorPin + ' — works on the keypad all day, from check-in day through checkout day.' : '') +
       '\n\nUse your confirmation code on the castle site to view, add to calendar, or cancel your stay.' +
-      '\nCheck-out is before the King starts vacuuming pointedly.');
+      '\nCheck-out is before the King starts vacuuming pointedly.',
+      eH_('Thy chamber is secured! &#127881;') +
+      eP_('Rejoice, ' + String(p.guestName).trim() + ' &mdash; the castle awaits.') +
+      eRows_([['Chamber', roomName_(room)],
+              ['Check-in', fmtD_(p.start) + ' — any time'],
+              ['Check-out', fmtD_(p.end) + ' — any time'],
+              ['Nights', String(nights_(p.start, p.end))]]) +
+      eCode_('Confirmation code', code) +
+      (doorPin ? eCode_('&#128272; Front door code', doorPin) + eLockHelp_(d) : '') +
+      eManageBtn_(d) +
+      eP_('<span style="color:#6b6078;font-size:12.5px">Your confirmation code views, calendars, or cancels this stay on the castle site. Check-out is before the King starts vacuuming pointedly.</span>'));
     return {ok: true, code: code, doorCode: doorPin || undefined};
   }
 
@@ -446,7 +501,13 @@ function handle_(p) {
       hit.guestName + "'s stay " + cWhen + ' was cancelled. Dates are free again.');
     mailGuest_(d, hit.guestEmail, "🏰 Your Wes's Castle stay is cancelled",
       'Your reservation in ' + roomName_(cRoom) + ' (' + cWhen + ') has been cancelled.' +
-      '\nThe castle mourns, briefly, then re-lists the chamber.');
+      '\nThe castle mourns, briefly, then re-lists the chamber.',
+      eH_('Thy stay is cancelled') +
+      eP_('Your reservation has been struck from the royal ledger:') +
+      eRows_([['Chamber', roomName_(cRoom)], ['Dates', cWhen]]) +
+      (String(hit.doorCode || '') ? eP_('Your door code has been revoked from the lock.') : '') +
+      eP_('The castle mourns, briefly, then re-lists the chamber. Book again any time.') +
+      eManageBtn_(d));
     return {ok: true};
   }
 
@@ -479,7 +540,13 @@ function handle_(p) {
       "Approve or deny in the Keeper's Entrance. Code " + rqCode + '.');
     mailGuest_(d, rqEmail, "🏰 Thy request is with the Crown",
       'Your request is in:\n\n' + roomName_(rqRoom) + '\n' + rqWhen +
-      '\n\nCode: ' + rqCode + '\n\nThe castle will send word once the keeper decides.');
+      '\n\nCode: ' + rqCode + '\n\nThe castle will send word once the keeper decides.',
+      eH_('&#128591; Thy request is with the Crown') +
+      eP_('Those dates are held by the castle, but your plea has been heard:') +
+      eRows_([['Chamber', roomName_(rqRoom)], ['Dates requested', rqWhen]]) +
+      eCode_('Request code', rqCode) +
+      eP_('The Crown and the chamber&#8217;s keeper will decide, and a raven will bring their verdict. If approved, this code becomes your booking code.') +
+      eManageBtn_(d));
     return {ok: true, code: rqCode, pending: true};
   }
 
@@ -530,7 +597,12 @@ function handle_(p) {
     try {
       MailApp.sendEmail(rsEmail, '🏰 Password reset code: ' + code6,
         'Speak this at the gate to set a new password: ' + code6 +
-        '\n\nIt expires in 10 minutes. If thou didst not request it, ignore this raven.');
+        '\n\nIt expires in 10 minutes. If thou didst not request it, ignore this raven.',
+        {htmlBody: eWrap_(
+          eH_('&#128273; Reset thy password') +
+          eP_('Speak this code at the gate to set a new password:') +
+          eCode_('Reset code &middot; expires in 10 minutes', code6) +
+          eP_('<span style="color:#6b6078;font-size:12.5px">If thou didst not request it, ignore this raven and thy password stands.</span>'))});
       logNotify_(d, rsEmail, 'reset code', 'sent');
     } catch (e) {
       logNotify_(d, rsEmail, 'reset code', 'ERROR: ' + e.message);
@@ -609,7 +681,11 @@ function handle_(p) {
       ' (' + uWhen + ') was released by ' + a.name + '.');
     mailGuest_(d, b2.guestEmail, "🏰 Your Wes's Castle stay is cancelled",
       'Your reservation in ' + roomName_(uRoom) + ' (' + uWhen + ') was cancelled by the castle.' +
-      '\nQuestions? Reply to this email and the Crown shall answer.');
+      '\nQuestions? Reply to this email and the Crown shall answer.',
+      eH_('Thy stay was cancelled by the castle') +
+      eRows_([['Chamber', roomName_(uRoom)], ['Dates', uWhen]]) +
+      (String(b2.doorCode || '') ? eP_('Your door code has been revoked from the lock.') : '') +
+      eP_('Questions? Reply to this email and the Crown shall answer.'));
     return {ok: true};
   }
 
@@ -646,8 +722,16 @@ function handle_(p) {
       (aprPin ? ' Door code ' + aprPin + '.' : ''));
     mailGuest_(d, apr.guestEmail, "🏰 Thy request is GRANTED",
       'Rejoice! The castle approved your stay:\n\n' + roomName_(aprRoom) + '\n' + aprWhen +
-      (aprPin ? '\n🔐 Door code: ' + aprPin + ' — works on the keypad from 3pm check-in until 11am checkout.' : '') +
-      '\n\nYour confirmation code is unchanged: ' + apr.code);
+      (aprPin ? '\n🔐 Door code: ' + aprPin + ' — works on the keypad all day, from check-in day through checkout day.' : '') +
+      '\n\nYour confirmation code is unchanged: ' + apr.code,
+      eH_('&#9989; Thy request is GRANTED') +
+      eP_('Rejoice, ' + apr.guestName + '! The Crown has parted the block for thee:') +
+      eRows_([['Chamber', roomName_(aprRoom)],
+              ['Check-in', fmtD_(apr.start) + ' — any time'],
+              ['Check-out', fmtD_(apr.end) + ' — any time']]) +
+      eCode_('Confirmation code', apr.code) +
+      (aprPin ? eCode_('&#128272; Front door code', aprPin) + eLockHelp_(d) : '') +
+      eManageBtn_(d));
     return {ok: true};
   }
 
@@ -662,7 +746,12 @@ function handle_(p) {
       den.guestName + "'s request for " + denWhen + ' was denied by ' + a.name + '.');
     mailGuest_(d, den.guestEmail, "🏰 About thy request…",
       'Alas — the castle cannot host you ' + denWhen + ' in ' + roomName_(denRoom) +
-      '. Those dates remain spoken for.\n\nPerhaps other dates? The calendar awaits.');
+      '. Those dates remain spoken for.\n\nPerhaps other dates? The calendar awaits.',
+      eH_('Alas &mdash; about thy request') +
+      eP_('The castle cannot host you these dates; they remain spoken for:') +
+      eRows_([['Chamber', roomName_(denRoom)], ['Dates', denWhen]]) +
+      eP_('The Crown regrets the news. Perhaps other dates? The calendar awaits thee.') +
+      eManageBtn_(d));
     return {ok: true};
   }
 
@@ -694,7 +783,15 @@ function handle_(p) {
     mailGuest_(d, eb.guestEmail, "🏰 Thy Wes's Castle stay was updated",
       'The castle updated your reservation:\n\n' + roomName_(newRoom) + '\n' + whenE +
       (String(eb.doorCode || '') ? '\n🔐 Your door code ' + eb.doorCode + ' now follows the new dates.' : '') +
-      '\n\nYour confirmation code is unchanged: ' + eb.code);
+      '\n\nYour confirmation code is unchanged: ' + eb.code,
+      eH_('&#9999;&#65039; Thy stay was updated') +
+      eP_('The castle adjusted your reservation. The new arrangement:') +
+      eRows_([['Chamber', roomName_(newRoom)],
+              ['Check-in', fmtD_(p.start) + ' — any time'],
+              ['Check-out', fmtD_(p.end) + ' — any time']]) +
+      eCode_('Confirmation code (unchanged)', eb.code) +
+      (String(eb.doorCode || '') ? eCode_('&#128272; Door code (follows new dates)', eb.doorCode) : '') +
+      eManageBtn_(d));
     return {ok: true};
   }
 
@@ -753,6 +850,11 @@ function handle_(p) {
     setSetting_(d, 'seamLockName', pickName);
     logNotify_(d, 'lock', 'Seam connected', pickName + ' (' + pick.device_id.slice(0, 8) + '…)');
     return {ok: true, lockName: pickName};
+  }
+
+  if (action === 'setSiteUrl') {
+    setSetting_(d, 'siteUrl', String(p.value || '').trim());
+    return {ok: true};
   }
 
   if (action === 'setAdminNotify') {
