@@ -1745,6 +1745,7 @@ if('serviceWorker' in navigator && /^https?:$/.test(location.protocol))
   navigator.serviceWorker.register('sw.js').catch(()=>{});
 setTimeout(showInstallBar, 600); // iOS never fires beforeinstallprompt — show the pointer on load
 if(location.hash.toLowerCase()==='#lockhelp') setTimeout(()=>ACT.lockHelp(), 400); // emails link straight to the demo
+if(location.hash.toLowerCase()==='#createkey' && !ACCT) setTimeout(()=>openModal(authModalHTML('signup','')), 400); // email "create a castle key" button
 // instant first paint: last known ledger from cache, or placeholder cards —
 // the live ledger (5s+ round trip) hydrates in when it answers
 try{
