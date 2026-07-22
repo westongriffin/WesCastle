@@ -24,7 +24,19 @@ jobs:
         run: |
           if [ -z "$CLASPRC_B64" ]; then echo "CLASPRC_B64 secret is empty"; exit 1; fi
           printf '%s' "$CLASPRC_B64" | base64 -d > "$HOME/.clasprc.json"
-          node -e "const c=require(process.env.HOME+'/.clasprc.json'); if(!JSON.stringify(c).includes('refresh_token')){throw new Error('no refresh_token in credential')}; console.log('credential OK')"
+          node -e '
+            const c = require(process.env.HOME + "/.clasprc.json");
+            // clasp 2.x reads the token at c.token.access_token.
+            // clasp 3.x saves creds under c.tokens.default (no top-level token) -> version mismatch.
+            if (c.tokens && c.tokens.default && !(c.token && c.token.access_token)) {
+              throw new Error("CLASPRC_B64 is in clasp 3.x format (tokens.default) but this workflow uses clasp 2.4.2, which needs token.access_token. Regenerate the secret with: npm i -g @google/clasp@2.4.2 && clasp login, then base64 ~/.clasprc.json into CLASPRC_B64.");
+            }
+            if (!(c.token && c.token.access_token && c.token.refresh_token)) {
+              throw new Error("CLASPRC_B64 missing token.access_token / token.refresh_token expected by clasp 2.4.2. Regenerate with clasp 2.4.2 clasp login.");
+            }
+            console.log("credential OK (clasp 2.x format)");
+          '
+
       - name: Deploy WesCastleSync.gs
         env:
           SCRIPT_ID: '1PNeHFffcPYmkH0KcE0fKanVvWattES3PKM3CfaVJUEjXPzonMyFe20Zl'
