@@ -266,12 +266,14 @@ table.owners input{padding:7px 9px;border:1.5px solid var(--line);border-radius:
 <script>
 /* ================================================================
    Wes's Castle — chamber reservation system
-   Backend: Google Apps Script + Sheet (see WesCastleSync.gs).
+   Backend: Firebase (one Cloud Function + Firestore) — see SETUP.md.
    With no backend URL configured it runs in local demo mode.
    ================================================================ */
 
-// Paste your deployed Apps Script web app URL here to go live for everyone:
-const API_URL = 'https://script.google.com/macros/s/AKfycby7Gvo_PgBXwp6bbJ272HrHN26RU645psSH5eNSYndw1hut6wwWdyuQrudsqSQjna3-/exec';
+// The castle's backend. `./deploy.sh YOUR_PROJECT_ID` fills this in for you
+// (it will be https://YOUR_PROJECT_ID.web.app/api). When the site itself is served
+// from Firebase Hosting, the relative /api is used automatically.
+const API_URL = 'https://wes-castle-2610.web.app/api';
 
 const LS_STATE = 'wes-castle-v1';
 const LS_API   = 'wes-castle-api';
@@ -298,7 +300,11 @@ let ACCT = null;                          // guest account {token, email}
 try{ ACCT = JSON.parse(localStorage.getItem(LS_ACCT)) }catch(e){}
 let ACCT_STAYS = null;                    // server-side stays for the signed-in guest
 
-function apiUrl(){ return (localStorage.getItem(LS_API) || API_URL || '').trim(); }
+function apiUrl(){
+  const u = (localStorage.getItem(LS_API) || API_URL || '').trim();
+  if (u) return u;
+  return /\.(web\.app|firebaseapp\.com)$/.test(location.hostname) ? '/api' : ''; // same-origin on Firebase Hosting
+}
 
 /* ---------------- date helpers (all local-time, YYYY-MM-DD) ---------------- */
 function iso(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
@@ -579,12 +585,11 @@ async function api(action, payload){
 
 const LS_CACHE = 'wes-castle-cache';
 function adoptState(r){
-  // display copy (name/emoji/tag/rate) always comes from SEED_ROOMS so a
-  // mis-encoded backend can never garble the cards; the backend only
-  // supplies live fields (closed, ownerName) and bookings
+  // Room copy (name/emoji/tag/rate) is whatever the backend stores — Wes edits it there —
+  // with the built-in text as a fallback for anything blank.
   S = {rooms: r.rooms.map(rm=>{
-    const m = SEED_ROOMS.find(x=>x.id===rm.id);
-    return m ? {...rm, name:m.name, emoji:m.emoji, tag:m.tag, rate:m.rate, dark:!!m.dark} : rm;
+    const m = SEED_ROOMS.find(x=>x.id===rm.id) || {};
+    return {...rm, name:rm.name||m.name, emoji:rm.emoji||m.emoji, tag:rm.tag||m.tag, rate:rm.rate||m.rate, dark:rm.dark!==undefined?!!rm.dark:!!m.dark};
   }), bookings: r.bookings, adminNotifySet: !!r.adminNotifySet, seam: r.seam||{set:false, lockName:''}, siteUrl: r.siteUrl||''};
 }
 // silent=true → background poll: never bother the user about a blip
@@ -1116,8 +1121,8 @@ function keeperView(){
           <div class="inline-form"><input id="site-url" placeholder="https://you.github.io/wes-castle" value="${esc(S.siteUrl||'')}">
           <button class="btn sm" data-act="saveSiteUrl">Save</button></div></div>
         <div class="setting"><h4>Royal ledger (backend URL)</h4>
-          <p>${apiUrl()?'Connected — all devices share the same calendar.':'Not connected — running in demo mode on this device. Paste your Apps Script web app URL to go live.'}</p>
-          <div class="inline-form"><input id="api-url-in" placeholder="https://script.google.com/…/exec" value="${esc(localStorage.getItem(LS_API)||'')}">
+          <p>${apiUrl()?'Connected — all devices share the same calendar.':'Not connected — running in demo mode on this device. Paste your castle backend URL (https://YOUR-PROJECT.web.app/api) to go live.'}</p>
+          <div class="inline-form"><input id="api-url-in" placeholder="https://YOUR-PROJECT.web.app/api" value="${esc(localStorage.getItem(LS_API)||'')}">
           <button class="btn sm" data-act="saveApiUrl">Save</button></div></div>
       </div></div>`;
   }
@@ -1258,7 +1263,7 @@ const ACT = {
     const done=pending('🙏 Sending…');
     const r=await api('requestBook', {roomId:rm.id, start:s, end:e, guestName:name, guestEmail:email});
     if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     closeModal();
     addStay({code:r.code, roomId:rm.id, guestName:name, start:s, end:e, email, pending:true});
@@ -1290,7 +1295,7 @@ const ACT = {
     const done=pending('✂️ Releasing…');
     const r=await api('unblockRange',{pin:sess.pin, bookingId:BK.bookingId, start:s, end:e});
     if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     carveLocalBlocks(roomId, s, e);
     closeModal(); render(); toast('Dates released — the rest of the block stands. ✂️');
@@ -1301,7 +1306,7 @@ const ACT = {
     const done=pending('✅…');
     const r=await api('approveRequest',{pin:sess.pin, bookingId:id});
     if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     if(b){ b.type='guest'; carveLocalBlocks(b.roomId, b.start, b.end); }
     render(); toast('Approved — the guest is booked and the block parted around them. ✅');
@@ -1312,7 +1317,7 @@ const ACT = {
     const done=pending('❌…');
     const r=await api('denyRequest',{pin:sess.pin, bookingId:id});
     if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     S.bookings=S.bookings.filter(x=>x.id!==id);
     render(); toast('Request denied. The raven departs with the sad news.');
@@ -1370,7 +1375,7 @@ const ACT = {
     if(!r.ok){
       // older backends without findByCode fall through to the PIN gate or unknown-action
       toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
-        ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+        ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
         : r.error, true);
       return;
     }
@@ -1392,7 +1397,7 @@ const ACT = {
     const done=pending('⏳ Unlocking…');
     const r=await api('signin',{email,password});
     if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     acctIn(r, 'The gate opens — welcome back! 🗝️');
   },
@@ -1405,7 +1410,7 @@ const ACT = {
     const done=pending('⏳ Forging…');
     const r=await api('signup',{name, email, password});
     if(!r.ok){ done(); toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     acctIn(r, 'Thy castle key is forged! 🗝️');
   },
@@ -1416,7 +1421,7 @@ const ACT = {
     const r=await api('resetStart',{email});
     done();
     if(!r.ok){ toast(/Unknown decree|does not recognize that PIN/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     toast(r.demoCode ? 'Demo raven whispers: thy code is '+r.demoCode : 'Code sent — check thy email. 🐦');
     document.getElementById('au-code')?.focus();
@@ -1553,7 +1558,7 @@ const ACT = {
     const done=pending('💾 Saving…');
     const r=await api('editBooking',{pin:sess.pin, bookingId:BK.bookingId, roomId:BK.roomId, start:BK.start, end:BK.end, guestName:name});
     if(!r.ok){ done(); toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     const b=S.bookings.find(x=>x.id===BK.bookingId);
     if(b){ b.roomId=BK.roomId; b.start=BK.start; b.end=BK.end; if(name) b.guestName=name; }
@@ -1609,7 +1614,7 @@ const ACT = {
     done();
     if(!r.ok){
       toast(/Unknown decree/.test(r.error||'')
-        ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+        ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
         : r.error, true);
       return;
     }
@@ -1624,7 +1629,7 @@ const ACT = {
     done();
     if(!r.ok){
       toast(/Unknown decree/.test(r.error||'')
-        ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+        ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
         : r.error, true);
       return;
     }
@@ -1637,7 +1642,7 @@ const ACT = {
     const r=await api('setSiteUrl',{pin:sess.pin, value:v});
     done();
     if(!r.ok){ toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     S.siteUrl=v; render();
     toast(v?'Castle address proclaimed — email buttons now point home. 🌐':'Castle address cleared.');
@@ -1650,7 +1655,7 @@ const ACT = {
     const r=await api('seamConnect',{pin:sess.pin, key, deviceId: typeof deviceId==='string'&&deviceId.startsWith('dev:')?deviceId.slice(4):undefined});
     done();
     if(!r.ok){ toast(/Unknown decree/.test(r.error||'')
-      ? 'The royal ledger needs its update — paste the new backend script and deploy a new version.'
+      ? 'The castle’s backend is out of date — redeploy it (see SETUP.md).'
       : r.error, true); return; }
     if(r.choose){ // more than one lock — let the Crown pick
       window._seamKey=key;
@@ -1758,7 +1763,8 @@ if(!S.rooms.length){
 render();
 refresh();
 loadAcctStays();
-setInterval(()=>{ if(!veil.classList.contains('open')) refresh(true); }, 60000);
+// background tabs don't poll (each poll is a handful of database reads); focus re-syncs immediately
+setInterval(()=>{ if(document.visibilityState==='visible' && !veil.classList.contains('open')) refresh(true); }, 60000);
 window.addEventListener('focus', ()=>{ if(!veil.classList.contains('open')) refresh(true); });
 </script>
 </body>
