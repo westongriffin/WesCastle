@@ -291,6 +291,8 @@ const SEED_ROOMS = [
 /* ---------------- state ---------------- */
 let S = {rooms:[], bookings:[]};          // shared state from backend
 let sess = null;                          // {pin, role:'admin'|'owner', name, rooms:[]}
+let KD = null;                            // admin only: {roomId:{ownerPin, ownerNotify}} from keeperDetails (never in public state)
+let KDloading = false;
 try{ sess = JSON.parse(sessionStorage.getItem(SS_SESS)) }catch(e){}
 const UIS = {view:'guest', calBase:null, kcalBase:null}; // calBase/kcalBase = Date, first of month shown
 let BK = null;                            // active booking modal {roomId, mode:'book'|'block'|'search', start, end}
@@ -556,6 +558,20 @@ const Local = {
     }
     if(action==='setSiteUrl'){
       d.siteUrl=(p.value||'').trim(); this.save(d); return {ok:true};
+    }
+    if(action==='keeperDetails'){
+      return {ok:true, keepers:d.rooms.map(r=>({id:r.id, ownerName:r.ownerName||'', ownerPin:r.ownerPin||'', ownerNotify:r.ownerNotify||''}))};
+    }
+    if(action==='setRoomInfo'){
+      const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
+      const name=String(p.name||'').trim().slice(0,40);
+      if(!name) return {ok:false,error:'Every chamber needs a name.'};
+      if(d.rooms.some(x=>x.id!==r.id && String(x.name).trim().toLowerCase()===name.toLowerCase())) return {ok:false,error:'Another chamber already bears that name.'};
+      r.name=name;
+      if(p.emoji!==undefined) r.emoji=String(p.emoji||'').trim().slice(0,8)||r.emoji;
+      if(p.tag!==undefined) r.tag=String(p.tag||'').trim().slice(0,120);
+      if(p.rate!==undefined) r.rate=String(p.rate||'').trim().slice(0,40);
+      this.save(d); return {ok:true};
     }
     if(action==='toggleClosed'){
       const r=d.rooms.find(r=>r.id===p.roomId); if(!r) return {ok:false,error:'No such chamber.'};
@@ -1083,18 +1099,31 @@ function keeperView(){
   }
 
   if(sess.role==='admin'){
+    html += `<div class="kcard"><h3>🏷️ Chamber names</h3>
+      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Rename a chamber whenever the mood strikes. The new name appears on the guest cards, in the calendar, and in every email the castle sends from then on. Existing reservations simply follow the chamber.</p>
+      <div style="overflow-x:auto"><table class="owners">
+        <tr><th>Icon</th><th>Name</th><th>Description</th><th>Rate</th><th></th></tr>
+        ${S.rooms.map(r=>`<tr>
+          <td><input id="rm-emoji-${r.id}" value="${esc(r.emoji||'')}" maxlength="8" style="max-width:56px;text-align:center"></td>
+          <td><input id="rm-name-${r.id}" value="${esc(r.name||'')}" maxlength="40" placeholder="Chamber name"></td>
+          <td><input id="rm-tag-${r.id}" value="${esc(r.tag||'')}" maxlength="120" placeholder="Queen bed · en suite"></td>
+          <td><input id="rm-rate-${r.id}" value="${esc(r.rate||'')}" maxlength="40" placeholder="Free" style="max-width:120px"></td>
+          <td><button class="btn sm" data-act="saveRoomInfo" data-arg="${r.id}">Save</button></td>
+        </tr>`).join('')}
+      </table></div></div>`;
+
     html += `<div class="kcard"><h3>👥 Chamber keepers</h3>
-      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Assign a keeper to a chamber: give them a name and a PIN. Their PIN unlocks full booking &amp; release rights for that chamber only. Clear the name to remove them. <b>Notify</b> is where they hear of bookings &amp; cancellations — an email, or a carrier text address like <i>5551234567@vtext.com</i>. Addresses stay hidden once saved: blank keeps the current one, type “-” to remove it. <b>Spots</b> = how many bookings the chamber hosts per night (set the Media Room to 4 to let guests share it).</p>
+      <p style="color:var(--ink2);font-size:13.5px;margin-top:4px">Assign a keeper to a chamber: give them a name and a PIN. Their PIN unlocks full booking &amp; release rights for that chamber only. Clear the name to remove them. <b>Notify</b> is where they hear of bookings &amp; cancellations — an email, or a carrier text address like <i>5551234567@vtext.com</i>; leave it empty to turn their notifications off. As the Crown you see every keeper&rsquo;s current PIN and address here — edit the field and Save. <b>Spots</b> = how many bookings the chamber hosts per night (set the Media Room to 4 to let guests share it).</p>
       <div style="overflow-x:auto"><table class="owners">
         <tr><th>Chamber</th><th>Keeper</th><th>PIN</th><th>Notify</th><th>Spots</th><th></th></tr>
-        ${S.rooms.map(r=>`<tr>
+        ${S.rooms.map(r=>{ const k=KD&&KD[r.id]; return `<tr>
           <td>${r.emoji} ${esc(r.name)}</td>
           <td><input id="own-name-${r.id}" value="${esc(r.ownerName||'')}" placeholder="—"></td>
-          <td><input id="own-pin-${r.id}" placeholder="set new PIN"></td>
-          <td><input id="own-notify-${r.id}" placeholder="${r.ownerNotifySet?'✓ set — type to replace':'email or 555…@vtext.com'}"></td>
+          <td><input id="own-pin-${r.id}" value="${k?esc(k.ownerPin):''}" placeholder="${KD?'set a PIN':'loading…'}" autocomplete="off" style="max-width:110px;font-family:monospace"></td>
+          <td><input id="own-notify-${r.id}" value="${k?esc(k.ownerNotify):''}" placeholder="${KD?'email or 555…@vtext.com':'loading…'}" autocomplete="off"></td>
           <td><input id="own-cap-${r.id}" type="number" min="1" max="20" value="${r.capacity||1}" style="max-width:64px"></td>
-          <td><button class="btn sm" data-act="saveOwner" data-arg="${r.id}">Save</button></td>
-        </tr>`).join('')}
+          <td><button class="btn sm" data-act="saveOwner" data-arg="${r.id}" ${KD?'':'disabled'}>Save</button></td>
+        </tr>`;}).join('')}
       </table></div></div>`;
 
     html += `<div class="kcard"><h3>⚙️ Royal decrees</h3>
@@ -1134,6 +1163,16 @@ function render(){
   document.getElementById('demo-banner').style.display = apiUrl() ? 'none' : 'block';
   document.getElementById('main').innerHTML =
     (UIS.view==='keeper' && sess) ? keeperView() : guestView();
+  if(UIS.view==='keeper' && sess && sess.role==='admin' && !KD && !KDloading) loadKeeperDetails();
+}
+// The Crown's view of keeper PINs & notify addresses; fetched on demand and re-fetched after every save.
+async function loadKeeperDetails(){
+  KDloading=true;
+  const r=await api('keeperDetails',{pin:sess&&sess.pin});
+  KDloading=false;
+  if(!r.ok || !sess || sess.role!=='admin') return;
+  KD={}; for(const k of r.keepers) KD[k.id]={ownerPin:k.ownerPin, ownerNotify:k.ownerNotify};
+  if(UIS.view==='keeper') render();
 }
 
 /* ---------------- actions ---------------- */
@@ -1513,7 +1552,7 @@ const ACT = {
     toast(r.role==='admin' ? 'Welcome back, Your Majesty. 👑' : `The keys are yours, ${r.name}. 🗝️`);
   },
   logout(){
-    sess=null; sessionStorage.removeItem(SS_SESS);
+    sess=null; KD=null; sessionStorage.removeItem(SS_SESS);
     UIS.view='guest'; render();
   },
 
@@ -1574,29 +1613,42 @@ const ACT = {
     toast(r.closed?'Chamber closed by order of the Crown. 🔒':'Chamber reopened. 🔓');
     refresh(true);
   },
+  async saveRoomInfo(id){
+    const v=k=>(document.getElementById('rm-'+k+'-'+id)?.value||'').trim();
+    const name=v('name'), emoji=v('emoji'), tag=v('tag'), rate=v('rate');
+    if(!name){ toast('Every chamber needs a name.', true); return; }
+    const done=pending('⏳…');
+    const r=await api('setRoomInfo',{pin:sess.pin, roomId:id, name, emoji, tag, rate});
+    done();
+    if(!r.ok){ toast(r.error, true); return; }
+    const rm=room(id);
+    Object.assign(rm,{name, emoji:emoji||rm.emoji, tag, rate});
+    render();
+    toast(`The chamber is now called ${name}. 🏷️`);
+    refresh(true);
+  },
   async saveOwner(id){
+    // the Crown sees the live PIN & address in the fields, so what's in them is what gets saved
     const name=document.getElementById('own-name-'+id).value.trim();
     const pin=document.getElementById('own-pin-'+id).value.trim();
-    if(name && !pin && !room(id).ownerName){ toast('Set a PIN for the new keeper.', true); return; }
-    if(name && pin && pin.length<4){ toast('Keeper PINs need at least 4 characters.', true); return; }
-    // blank pin/notify fields keep the existing values; "-" clears notify
+    if(name && !pin){ toast('Set a PIN for the keeper.', true); return; }
+    if(name && pin.length<4){ toast('Keeper PINs need at least 4 characters.', true); return; }
     const nt=(document.getElementById('own-notify-'+id)?.value||'').trim();
+    if(nt && nt!=='-' && !nt.includes('@')){ toast('Notify needs an email or carrier address (something@…).', true); return; }
     const cap=Math.max(1, Math.min(20, parseInt(document.getElementById('own-cap-'+id)?.value,10)||1));
     const payload={pin:sess.pin, roomId:id, ownerName:name, ownerPin:pin, ownerNotify:nt==='-'?'':nt, capacity:cap};
-    if(name && !pin) payload.keepPin=true;
-    if(!nt) payload.keepNotify=true;
     const done=pending('⏳…');
     const r=await api('assignOwner',payload);
     if(!r.ok){ done(); toast(r.error, true); return; }
     const rm=room(id);
     rm.ownerName=name;
     rm.capacity=cap;
-    if(!name) rm.ownerNotifySet=false;
-    else if(nt && nt!=='-') rm.ownerNotifySet=nt.includes('@');
-    else if(nt==='-') rm.ownerNotifySet=false;
+    rm.ownerNotifySet=!!name && nt!=='-' && nt.includes('@');
+    if(KD) KD[id]= name ? {ownerPin:pin, ownerNotify:nt==='-'?'':nt} : {ownerPin:'', ownerNotify:''};
     render();
-    toast(name?`${name} now keeps ${rm.name}. 🗝️`:'Chamber updated.');
+    toast(name?`${name} now keeps ${rm.name}. 🗝️`:'Keeper removed.');
     refresh(true);
+    loadKeeperDetails();
   },
   async saveAdminPin(){
     const p=document.getElementById('new-admin-pin').value.trim();
